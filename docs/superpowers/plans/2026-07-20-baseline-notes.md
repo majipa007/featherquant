@@ -113,3 +113,21 @@
   baseline CANNOT run unrestricted on this hardware at all.
 - `llama-quantize` under 3G ceiling: exit 137 (OOM-killed) as expected.
 - featherquant @ 3G ceiling: recorded below when the run completes.
+
+## Scale proof part 2 — Qwen3-14B results
+
+- Source 29.5 GB BF16 GGUF; machine 15 GB RAM (WSL2); models on ext4.
+- featherquant @ **3G ceiling: PASS** — output 15.7 GB Q8_0, 455 chunks,
+  27.5 GB read / 14.6 GB written, **331 s** (~85 MB/s effective).
+- Memory: `rss_metadata_peak` 561 MiB (true process peak), streaming
+  `peak_rss` 540 MiB, `budget_violations: 0`. Source-to-true-peak ratio
+  ≈ **53x**; source-to-ceiling 9.8x (the ceiling was barely touched —
+  per-tensor working sets stay small at Q8_0 row granularity).
+- Baselines: `llama-quantize` exit 137 (OOM) at 3G; unrestricted run
+  impossible on this 15 GB machine (needs ~30 GB) — featherquant completes
+  where the conventional tool cannot run at all.
+- Smoke: `llama-completion` loads and generates (load 64 s, 0.47 tok/s
+  CPU — expected for 14B Q8_0 on 8 threads), exit 0, coherent output.
+- Per-tensor byte equivalence vs llama-quantize is NOT verifiable at 14B on
+  this machine (no reference producible); kernel byte-parity was proven at
+  0.6B where the reference exists.
