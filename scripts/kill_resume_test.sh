@@ -1,9 +1,12 @@
 #!/usr/bin/env bash
 # Torture test: repeatedly SIGKILL featherquant at random moments, resume,
 # until it completes; then verify against an uninterrupted reference run.
-# Usage: scripts/kill_resume_test.sh SRC.gguf OUT.gguf [BUDGET]
+# Usage: scripts/kill_resume_test.sh SRC.gguf OUT.gguf [BUDGET] [KILL_MAX_S]
+#   KILL_MAX_S  upper bound of the random kill delay (default 20). Must
+#   exceed startup + largest-tensor commit time, or no attempt can ever
+#   bank progress (checkpoints are per-tensor).
 set -uo pipefail
-SRC=$1; OUT=$2; BUDGET=${3:-1GB}
+SRC=$1; OUT=$2; BUDGET=${3:-1GB}; KILL_MAX=${4:-20}
 PY=$(command -v python)
 rm -f "$OUT" "$OUT.manifest.json" "$OUT.ref" "$OUT.ref.manifest.json"
 
@@ -17,9 +20,7 @@ while true; do
   "$PY" -m featherquant.cli --model "$SRC" --output "$OUT" \
     --max-ram "$BUDGET" --resume >/dev/null 2>&1 &
   pid=$!
-  # Kill at a random point (0-8s). Must exceed resume's fixed startup +
-  # verify overhead sometimes, or no attempt can make net progress.
-  sleep "$((RANDOM % 8)).$((RANDOM % 9))"
+  sleep "$((RANDOM % KILL_MAX)).$((RANDOM % 9))"
   kill -9 "$pid" 2>/dev/null
   wait "$pid"; code=$?
   if [ "$code" -eq 0 ]; then break; fi     # finished before the kill landed
