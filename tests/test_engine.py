@@ -101,3 +101,44 @@ def test_engine_q4_k_m_format(tmp_path):
     assert by_name["blk.0.attn_norm.weight"].tensor_type == GGMLQuantizationType.F32
     import gguf
     assert int(r.fields["general.file_type"].contents()) == int(gguf.LlamaFileType.MOSTLY_Q4_K_M)
+
+
+def test_adaptive_output_identical_and_reported(tmp_path):
+    sp, *_ = _make_model(tmp_path)
+    big = rss_bytes() + (512 << 20)
+    o1, o2 = tmp_path / "a.gguf", tmp_path / "b.gguf"
+    quantize_model(str(sp), str(o1), big, adaptive=True)
+    quantize_model(str(sp), str(o2), big, adaptive=False)
+    assert o1.read_bytes() == o2.read_bytes()  # controller never changes bytes
+    import json
+    rp = tmp_path / "r.json"
+    s = quantize_model(str(sp), str(tmp_path / "c.gguf"), big, report=str(rp))
+    assert "adaptive" in s and "blk.0.attn_q.weight" in s["adaptive"]
+    json.loads(rp.read_text())  # report stays serializable
+
+
+def test_adaptive_shrinks_under_simulated_pressure(tmp_path, monkeypatch):
+    import featherquant.engine as eng
+    sp, w, *_ = _make_model(tmp_path)
+    base = rss_bytes()
+    calls = {"n": 0}
+
+    def fake_rss():
+        calls["n"] += 1
+        # First few calls (setup): flat baseline. After that each call adds
+        # 64 MiB, so every chunk "costs" a huge measured delta.
+        if calls["n"] <= 2:
+            return base
+        return base + (64 << 20) * (calls["n"] - 2)
+
+    monkeypatch.setattr(eng, "rss_bytes", fake_rss)
+    # Working budget sized so the first chunk is ~4 of 10 rows.
+    from featherquant.engine import RESERVE, per_row_cost
+    budget = base + RESERVE + 5 * per_row_cost(64, 2)
+    stats = eng.quantize_model(str(sp), str(tmp_path / "o.gguf"), budget)
+    ad = stats["adaptive"]["blk.0.attn_q.weight"]
+    assert ad["chunk_rows_min"] < ad["chunk_rows_max"]  # pressure shrank chunks
+    # Output must still be correct despite the fake pressure.
+    r = GGUFReader(str(tmp_path / "o.gguf"))
+    tq = next(t for t in r.tensors if t.name == "blk.0.attn_q.weight")
+    assert tq.data.tobytes() == quantize_q8_0(w.astype(np.float32).ravel())

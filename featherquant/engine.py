@@ -5,6 +5,7 @@ Working set per chunk = source read buffer + numpy temporaries inside
 whose estimated cost fits ``max_ram - rss_at_start - RESERVE``, and RSS is
 sampled after every tensor for the report.
 """
+import gc
 import json
 import os
 import sys
@@ -14,6 +15,7 @@ from typing import Any
 from gguf import GGML_QUANT_SIZES, GGMLQuantizationType
 from gguf.gguf_reader import ReaderTensor
 
+from .controller import BlockController
 from .formats import FORMATS
 from .ggml_backend import GgmlLib, load_ggml
 from .gguf_io import ALIGN, ITEMSIZE, IncrementalWriter, ResumeWriter, TensorSource
@@ -117,6 +119,7 @@ def _prepare_resume(src: str, dst: str, manifest_path: str,
 def quantize_model(src: str, dst: str, max_ram: int, report: str | None = None,
                    fmt: str = "q8_0", ggml_lib: str | None = None,
                    manifest_path: str | None = None, resume: bool = False,
+                   adaptive: bool = True,
                    _force_chunk_rows: int | None = None,
                    _fail_after: int | None = None) -> dict[str, Any]:
     """Quantize ``src`` GGUF to format ``fmt`` at ``dst``, peak RSS <= ``max_ram``.
@@ -219,7 +222,7 @@ def quantize_model(src: str, dst: str, max_ram: int, report: str | None = None,
                     f"planned {entries[i].offset}")
             if tt != t.tensor_type:
                 _stream_quantize(source, iw, t, tt, working, stats,
-                                 _force_chunk_rows, lib)
+                                 _force_chunk_rows, lib, adaptive)
             else:
                 _stream_copy(source, iw, t, stats)
             # Commit: flush data, hash the written region, checkpoint.
@@ -249,23 +252,43 @@ def quantize_model(src: str, dst: str, max_ram: int, report: str | None = None,
     return stats
 
 
-def _stream_quantize(source: TensorSource, iw: "IncrementalWriter | ResumeWriter", t: ReaderTensor,
-                     tt: GGMLQuantizationType, working: int, stats: dict[str, Any],
-                     force_rows: int | None, lib: GgmlLib | None) -> None:
-    """Quantize one tensor to type ``tt`` in row chunks sized by the budget."""
+def _stream_quantize(source: TensorSource, iw: "IncrementalWriter | ResumeWriter",
+                     t: ReaderTensor, tt: GGMLQuantizationType, working: int,
+                     stats: dict[str, Any], force_rows: int | None,
+                     lib: GgmlLib | None, adaptive: bool = True) -> None:
+    """Quantize one tensor to type ``tt`` in row chunks sized by the budget.
+
+    With ``adaptive`` on, a BlockController refines the chunk size from
+    measured RSS deltas; the static ``per_row_cost`` model is only the
+    prior. Chunk boundaries never affect output bytes (rows and blocks are
+    independent), so adaptation is a memory-behavior knob, not a
+    correctness one.
+    """
     ne0 = int(t.shape[0])
     rows = int(t.n_elements) // ne0
     isz = ITEMSIZE[t.tensor_type]
-    chunk = force_rows or min(rows, working // per_row_cost(ne0, isz, tt))
-    if chunk < 1:
+    est = per_row_cost(ne0, isz, tt)
+    max_chunk = force_rows or min(rows, working // est)
+    if max_chunk < 1:
         # Report the minimum feasible budget instead of thrashing.
         sys.exit(f"budget too small for tensor {t.name}: one row needs about "
-                 f"{per_row_cost(ne0, isz, tt)} B working set on top of "
-                 "runtime + reserve")
-    # One reusable read buffer for the whole tensor.
-    buf = bytearray(chunk * ne0 * isz)
-    for r0 in range(0, rows, chunk):
-        n = min(chunk, rows - r0)
+                 f"{est} B working set on top of runtime + reserve")
+    ctrl = (BlockController(working, est)
+            if adaptive and force_rows is None else None)
+    # One reusable read buffer, sized at the static maximum; the controller
+    # may shrink chunks but never grows past the buffer (budget already
+    # spent on it).
+    buf = bytearray(max_chunk * ne0 * isz)
+    max_ram = int(stats["max_ram"])
+    seen_min, seen_max = rows + 1, 0
+    r0 = 0
+    while r0 < rows:
+        if ctrl is not None:
+            n = min(ctrl.next_rows(rows - r0), max_chunk)
+        else:
+            n = min(max_chunk, rows - r0)
+        seen_min, seen_max = min(seen_min, n), max(seen_max, n)
+        before = rss_bytes()
         x = source.read_rows_f32(t, r0, n, buf)
         if tt == GGMLQuantizationType.Q8_0:
             packed = quantize_q8_0(x)
@@ -277,6 +300,21 @@ def _stream_quantize(source: TensorSource, iw: "IncrementalWriter | ResumeWriter
         stats["bytes_read"] += n * ne0 * isz
         stats["bytes_written"] += len(packed)
         stats["chunks"] += 1
+        if ctrl is not None:
+            after = rss_bytes()
+            ctrl.observe(n, before, after)
+            if after > max_ram:
+                stats["budget_violations"] += 1
+                ctrl.violation()
+            elif after > max_ram - RESERVE // 2:
+                # Emergency headroom: reclaim garbage and back off.
+                gc.collect()
+                ctrl.violation()
+        r0 += n
+    if ctrl is not None:
+        stats.setdefault("adaptive", {})[t.name] = {
+            "chunk_rows_min": seen_min, "chunk_rows_max": seen_max,
+            "per_row_final": round(ctrl.per_row, 1)}
 
 
 def _stream_copy(source: TensorSource, iw: "IncrementalWriter | ResumeWriter", t: ReaderTensor,
