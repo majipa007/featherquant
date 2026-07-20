@@ -204,3 +204,48 @@ class IncrementalWriter:
                 self.f.flush()
         finally:
             self.w.close()
+
+
+class ResumeWriter:
+    """Writer over an existing partially-written GGUF (resume path).
+
+    Duck-types the subset of ``IncrementalWriter`` the streaming loop uses
+    (``begin_tensor``/``write``/``flush``/``tell``/``close``). Header, KV and
+    tensor infos already exist in the file from the interrupted run — this
+    just repositions and continues the data section.
+    """
+
+    def __init__(self, path: str, position: int):
+        try:
+            self.f = open(path, "r+b")
+            self.f.seek(position)
+        except OSError as exc:
+            raise RuntimeError(f"cannot reopen {path} for resume: {exc}") from exc
+
+    def begin_tensor(self) -> None:
+        """Pad to the alignment boundary (no-op when already aligned)."""
+        pad = (-self.f.tell()) % ALIGN
+        if pad:
+            self.f.write(b"\x00" * pad)
+
+    def write(self, data: bytes | memoryview) -> None:
+        """Append one chunk of the current tensor's packed data."""
+        try:
+            self.f.write(data)
+        except OSError as exc:
+            raise RuntimeError(f"write error (disk full?): {exc}") from exc
+
+    def flush(self) -> None:
+        """Flush buffered tensor data to disk (checkpoint boundary)."""
+        self.f.flush()
+
+    def tell(self) -> int:
+        """Current absolute position in the output file."""
+        return self.f.tell()
+
+    def close(self) -> None:
+        """Flush and close the reopened file."""
+        try:
+            self.f.flush()
+        finally:
+            self.f.close()

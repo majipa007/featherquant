@@ -16,7 +16,7 @@ from gguf.gguf_reader import ReaderTensor
 
 from .formats import FORMATS
 from .ggml_backend import GgmlLib, load_ggml
-from .gguf_io import ALIGN, ITEMSIZE, IncrementalWriter, TensorSource
+from .gguf_io import ALIGN, ITEMSIZE, IncrementalWriter, ResumeWriter, TensorSource
 from .manifest import Manifest, TensorEntry, sha256_file_region
 from .q8_0 import BLOCK, TYPE_SIZE, quantize_q8_0
 
@@ -60,10 +60,65 @@ def _align(n: int) -> int:
     return (n + ALIGN - 1) // ALIGN * ALIGN
 
 
+def _prepare_resume(src: str, dst: str, manifest_path: str,
+                    plan: list[tuple[ReaderTensor, GGMLQuantizationType, int]],
+                    fmt: str) -> tuple[Manifest, int]:
+    """Validate a saved manifest against the re-planned job.
+
+    Returns (manifest, index of first tensor to (re)write). Raises
+    RuntimeError on any identity/plan/header mismatch — never resumes into
+    a file that does not provably match the interrupted run.
+    """
+    man = Manifest.load(manifest_path)
+    if man.status == "complete":
+        sys.exit(f"{dst} is already complete per {manifest_path}; "
+                 "nothing to resume")
+    try:
+        st = os.stat(src)
+    except OSError as exc:
+        raise RuntimeError(f"cannot stat source {src}: {exc}") from exc
+    if (man.source_path != os.path.abspath(src)
+            or man.source_size != st.st_size
+            or man.source_mtime_ns != st.st_mtime_ns):
+        raise RuntimeError(
+            f"source changed since interrupted run: manifest recorded "
+            f"{man.source_path} size={man.source_size} "
+            f"mtime={man.source_mtime_ns}, found size={st.st_size} "
+            f"mtime={st.st_mtime_ns}")
+    if man.config != {"fmt": fmt}:
+        raise RuntimeError(f"config changed: manifest {man.config}, "
+                           f"current fmt={fmt!r}")
+    if len(plan) != len(man.tensors):
+        raise RuntimeError("re-planned tensor count differs from manifest")
+    off = man.header_end
+    for e, (t, tt, nbytes) in zip(man.tensors, plan):
+        if (e.name != t.name or e.ggml_type != int(tt)
+                or e.nbytes != nbytes or e.offset != off):
+            raise RuntimeError(f"re-planned job diverges from manifest at "
+                               f"{t.name} — refusing to resume")
+        off = _align(off + nbytes)
+    if sha256_file_region(dst, 0, man.header_end) != man.header_sha256:
+        raise RuntimeError(f"header of {dst} does not match manifest — "
+                           "output file was modified or belongs to another job")
+    # Verify committed tensors in order; first bad/missing hash is the
+    # resume point (a corrupt middle tensor forces rewrite from there on).
+    start_i = len(man.tensors)
+    for i, e in enumerate(man.tensors):
+        if e.sha256 is None:
+            start_i = i
+            break
+        if sha256_file_region(dst, e.offset, e.nbytes) != e.sha256:
+            e.sha256 = None
+            start_i = i
+            break
+    return man, start_i
+
+
 def quantize_model(src: str, dst: str, max_ram: int, report: str | None = None,
                    fmt: str = "q8_0", ggml_lib: str | None = None,
-                   manifest_path: str | None = None,
-                   _force_chunk_rows: int | None = None) -> dict[str, Any]:
+                   manifest_path: str | None = None, resume: bool = False,
+                   _force_chunk_rows: int | None = None,
+                   _fail_after: int | None = None) -> dict[str, Any]:
     """Quantize ``src`` GGUF to format ``fmt`` at ``dst``, peak RSS <= ``max_ram``.
 
     A sidecar manifest (``manifest_path``, default ``dst + ".manifest.json"``)
@@ -106,37 +161,57 @@ def quantize_model(src: str, dst: str, max_ram: int, report: str | None = None,
                   if tt != t.tensor_type else int(t.n_bytes))
         plan.append((t, tt, nbytes))
 
-    iw = IncrementalWriter(dst, source.reader, spec.file_type)
+    if manifest_path is None:
+        manifest_path = dst + ".manifest.json"
+    resuming = resume and os.path.exists(manifest_path)
+
+    iw: IncrementalWriter | ResumeWriter
+    if resuming:
+        man, start_i = _prepare_resume(src, dst, manifest_path, plan, fmt)
+        entries = man.tensors
+        if start_i < len(entries):
+            pos = entries[start_i].offset
+        else:  # everything committed; only the final status save was lost
+            pos = _align(entries[-1].offset + entries[-1].nbytes) if entries \
+                else man.header_end
+        iw = ResumeWriter(dst, pos)
+    else:
+        start_i = 0
+        iw = IncrementalWriter(dst, source.reader, spec.file_type)
+
     # From here on the writer holds an open file: every exit path must close
     # it (close() is lifecycle-safe even before begin_data()).
     try:
-        for t, tt, nbytes in plan:
-            iw.add_tensor_info(t.name, t.shape, nbytes, tt)
-        iw.begin_data()
-        iw.flush()
+        if not resuming:
+            assert isinstance(iw, IncrementalWriter)
+            for t, tt, nbytes in plan:
+                iw.add_tensor_info(t.name, t.shape, nbytes, tt)
+            iw.begin_data()
+            iw.flush()
+            # Precompute every tensor's absolute output offset (same
+            # alignment rule the writer applies) and open the manifest.
+            header_end = _align(iw.tell())
+            entries, off = [], header_end
+            for t, tt, nbytes in plan:
+                entries.append(TensorEntry(t.name, int(tt), off, nbytes, None))
+                off = _align(off + nbytes)
+            st = os.stat(src)
+            man = Manifest(source_path=os.path.abspath(src),
+                           source_size=st.st_size,
+                           source_mtime_ns=st.st_mtime_ns, config={"fmt": fmt},
+                           header_end=header_end, header_sha256="",
+                           tensors=entries, status="in_progress")
 
-        # Precompute every tensor's absolute output offset (same alignment
-        # rule the writer applies) and open the checkpoint manifest.
-        header_end = _align(iw.tell())
-        entries, off = [], header_end
-        for t, tt, nbytes in plan:
-            entries.append(TensorEntry(t.name, int(tt), off, nbytes, None))
-            off = _align(off + nbytes)
-        st = os.stat(src)
-        if manifest_path is None:
-            manifest_path = dst + ".manifest.json"
-        man = Manifest(source_path=os.path.abspath(src), source_size=st.st_size,
-                       source_mtime_ns=st.st_mtime_ns, config={"fmt": fmt},
-                       header_end=header_end, header_sha256="",
-                       tensors=entries, status="in_progress")
-
-        for i, (t, tt, _) in enumerate(plan):
+        for i in range(start_i, len(plan)):
+            t, tt, _ = plan[i]
+            if _fail_after is not None and (i - start_i) >= _fail_after:
+                raise RuntimeError("_fail_after test hook: simulated crash")
             iw.begin_tensor()
-            if i == 0:
+            if not resuming and i == 0:
                 # Padding now exists: the header region [0, header_end) is
                 # final. Hash it and write the initial checkpoint.
                 iw.flush()
-                man.header_sha256 = sha256_file_region(dst, 0, header_end)
+                man.header_sha256 = sha256_file_region(dst, 0, man.header_end)
                 man.save(manifest_path)
             if iw.tell() != entries[i].offset:
                 raise RuntimeError(
@@ -174,7 +249,7 @@ def quantize_model(src: str, dst: str, max_ram: int, report: str | None = None,
     return stats
 
 
-def _stream_quantize(source: TensorSource, iw: IncrementalWriter, t: ReaderTensor,
+def _stream_quantize(source: TensorSource, iw: "IncrementalWriter | ResumeWriter", t: ReaderTensor,
                      tt: GGMLQuantizationType, working: int, stats: dict[str, Any],
                      force_rows: int | None, lib: GgmlLib | None) -> None:
     """Quantize one tensor to type ``tt`` in row chunks sized by the budget."""
@@ -204,7 +279,7 @@ def _stream_quantize(source: TensorSource, iw: IncrementalWriter, t: ReaderTenso
         stats["chunks"] += 1
 
 
-def _stream_copy(source: TensorSource, iw: IncrementalWriter, t: ReaderTensor,
+def _stream_copy(source: TensorSource, iw: "IncrementalWriter | ResumeWriter", t: ReaderTensor,
                  stats: dict[str, Any]) -> None:
     """Copy an unquantized tensor verbatim in bounded chunks."""
     remaining = int(t.n_bytes)

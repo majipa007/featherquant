@@ -30,10 +30,14 @@ def main() -> None:
     p.add_argument("--ggml-lib",
                    help="path to libggml-base.so for K-quant formats "
                         "(default: $GGML_LIB or the built-in path)")
+    p.add_argument("--resume", action="store_true",
+                   help="continue an interrupted run from its manifest "
+                        "(verifies committed tensors first)")
     a = p.parse_args()
     try:
         stats = quantize_model(a.model, a.output, a.max_ram, report=a.report,
-                               fmt=a.format, ggml_lib=a.ggml_lib)
+                               fmt=a.format, ggml_lib=a.ggml_lib,
+                               resume=a.resume)
     except RuntimeError as exc:
         # Turn internal errors into a clean CLI failure, no traceback spam.
         sys.exit(f"featherquant: error: {exc}")
