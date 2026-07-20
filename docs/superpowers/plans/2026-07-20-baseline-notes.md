@@ -39,5 +39,23 @@
 
 ## Inference smoke test
 
-- `llama-cli -m fq_q8_0.gguf -p "The capital of France is" -n 8 --seed 1 -no-cnv`
-- Result: recorded below after run completes.
+- Note: this llama.cpp build's `llama-cli` is chat-first and ignores
+  `--no-conversation` (interactive REPL hangs headless runs); use
+  `llama-completion` for scripted smoke tests. Also pass `-c 512` — the
+  default allocates Qwen3's full 40k context (~5 GB KV cache).
+- `llama-completion -m fq_q8_0.gguf -p "The capital of France is" -n 8 --seed 1 -c 512 -t 8`
+- Result: **PASS**, exit 0. Load time 428 ms, prompt eval 75.8 tok/s,
+  coherent generation (model entered Qwen3 thinking mode: "Okay, so I need to").
+  No GGUF validation errors.
+
+## Success criteria status (spec §14, prototype scale)
+
+1. Source > enforced RAM: PASS (1.5 GB source, 1 GB ceiling).
+2. Inside external ceiling: PASS (systemd cgroup, exit 0).
+3. Tensor larger than working budget: exercised via chunked streaming
+   (327 chunks) and unit-tested chunk/full byte equivalence.
+4. Valid loadable model: PASS (llama-completion).
+5. Matches reference: PASS, byte-identical (311/311 tensors).
+6. Recovery after interruption: out of scope (Phase 4).
+7. RAM/runtime trade-off: 2.74 GB/7.9 s (baseline) vs 0.59 GB/30.1 s (featherquant).
+8. Reproducible manifest: partial (report JSON + deterministic output).
