@@ -2,10 +2,12 @@
 
 **Quantize models larger than your RAM.**
 
-FeatherQuant is a memory-bounded, out-of-core GGUF quantizer. It converts an
-F16/BF16 GGUF model to Q8_0 while keeping peak process memory under a
-user-configured budget — even when the source model is larger than that
-budget. It trades time and disk I/O for memory.
+FeatherQuant is a memory-bounded, out-of-core LLM quantizer. It converts an
+F16/BF16 GGUF model — or a sharded-safetensors Hugging Face checkpoint
+directly — to Q8_0 or Q4_K_M while keeping peak process memory under a
+user-configured budget, even when the source model is larger than that
+budget. It trades time and disk I/O for memory, checkpoints after every
+tensor, and resumes interrupted runs with verified state.
 
 ## How it works
 
@@ -36,6 +38,12 @@ Key properties:
 - **Deterministic** — same input and config produce a byte-identical file.
 - **Externally verifiable** — ships a cgroup-v2 harness that runs the whole
   job under a kernel-enforced `MemoryMax` ceiling.
+- **Crash-safe** — an atomic sidecar manifest checkpoints every committed
+  tensor (sha256-verified); `--resume` continues an interrupted run and the
+  result stays byte-identical (`scripts/kill_resume_test.sh` proves it under
+  repeated SIGKILL).
+- **Adaptive** — chunk sizes refine from live RSS feedback (EWMA
+  controller); the static cost model is only the prior.
 
 ## Install
 
@@ -59,9 +67,27 @@ featherquant \
 
 `--max-ram` accepts `2GB`, `512M`, `1.5GiB`, or plain bytes. The report JSON
 records peak RSS, working budget, bytes read/written, chunk count, budget
-violations, and elapsed time. If the budget cannot fit even one row of the
-largest tensor, featherquant exits early and names the minimum feasible
-working set instead of thrashing.
+violations, adaptive-controller telemetry, and elapsed time. If the budget
+cannot fit even one row of the largest tensor, featherquant exits early and
+names the minimum feasible working set instead of thrashing.
+
+Other flags: `--format q4_k_m` (K-quant output; kernels come byte-exact from
+llama.cpp's `libggml-base.so` via ctypes — point `--ggml-lib`/`$GGML_LIB` at
+it), `--resume` (continue an interrupted run), `--vocab-gguf` (required for
+safetensors input).
+
+### Quantize a Hugging Face checkpoint directly (no BF16 intermediate)
+
+```bash
+scripts/make_vocab_gguf.sh ./hf-model ./vocab.gguf   # tiny metadata-only GGUF
+featherquant --model ./hf-model --vocab-gguf ./vocab.gguf \
+  --output ./model-q8_0.gguf --format q8_0 --max-ram 1GB
+```
+
+Qwen3-family only for now (llama-family needs attn permutation on load —
+refused rather than silently wrong). Output is byte-identical to running
+`convert_hf_to_gguf.py --outtype bf16` + featherquant, without the ~2x
+source-size intermediate file.
 
 ### Run under a hard OS ceiling
 
@@ -91,14 +117,16 @@ Details in `docs/superpowers/plans/2026-07-20-baseline-notes.md`.
 
 ## Scope (current prototype)
 
-- Input: little-endian GGUF, F32/F16/BF16 tensors. Output: Q8_0.
-- Quantization rule (mirrors `llama-quantize` Q8_0): tensors with ≥ 2 dims
-  and row length divisible by 32 become Q8_0; everything else is copied
-  verbatim.
+- Input: little-endian GGUF (F32/F16/BF16 tensors) or sharded safetensors
+  (Qwen3-family). Output: Q8_0 or Q4_K_M (byte-identical to
+  `llama-quantize` on the validated model).
 - Single process, single worker, CPU-only, Linux.
+- Minimum feasible budget on 150k-token-vocab models is ~600 MiB: GGUF
+  metadata parsing transiently allocates ~0.5 GiB (released before
+  streaming; recorded as `rss_metadata_peak` in the report).
 
-Planned next (see `project.md`): adaptive block sizing, checkpoint/resume,
-sharded Safetensors input, 4-bit K-quants.
+Planned next (see `project.md`): calibration/imatrix modes, more
+architectures, leaner metadata parsing to lower the budget floor.
 
 ## Development
 
