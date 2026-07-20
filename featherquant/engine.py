@@ -16,7 +16,8 @@ from gguf.gguf_reader import ReaderTensor
 
 from .formats import FORMATS
 from .ggml_backend import GgmlLib, load_ggml
-from .gguf_io import ITEMSIZE, IncrementalWriter, TensorSource
+from .gguf_io import ALIGN, ITEMSIZE, IncrementalWriter, TensorSource
+from .manifest import Manifest, TensorEntry, sha256_file_region
 from .q8_0 import BLOCK, TYPE_SIZE, quantize_q8_0
 
 # ponytail: fixed 64 MiB safety reserve; adaptive governor is Phase 3.
@@ -54,13 +55,22 @@ def per_row_cost(ne0: int, itemsize: int,
     return ne0 * itemsize + 20 * ne0 + packed_nbytes(ne0, out_type)
 
 
+def _align(n: int) -> int:
+    """Round n up to the GGUF tensor alignment boundary."""
+    return (n + ALIGN - 1) // ALIGN * ALIGN
+
+
 def quantize_model(src: str, dst: str, max_ram: int, report: str | None = None,
                    fmt: str = "q8_0", ggml_lib: str | None = None,
+                   manifest_path: str | None = None,
                    _force_chunk_rows: int | None = None) -> dict[str, Any]:
     """Quantize ``src`` GGUF to format ``fmt`` at ``dst``, peak RSS <= ``max_ram``.
 
-    Returns a stats dict; optionally writes it as JSON to ``report``.
-    ``_force_chunk_rows`` is a test hook that overrides the planner.
+    A sidecar manifest (``manifest_path``, default ``dst + ".manifest.json"``)
+    is checkpointed atomically after every committed tensor for crash
+    recovery. Returns a stats dict; optionally writes it as JSON to
+    ``report``. ``_force_chunk_rows`` is a test hook that overrides the
+    planner.
     """
     t0 = time.monotonic()
     if fmt not in FORMATS:
@@ -103,19 +113,53 @@ def quantize_model(src: str, dst: str, max_ram: int, report: str | None = None,
         for t, tt, nbytes in plan:
             iw.add_tensor_info(t.name, t.shape, nbytes, tt)
         iw.begin_data()
+        iw.flush()
 
-        for t, tt, _ in plan:
+        # Precompute every tensor's absolute output offset (same alignment
+        # rule the writer applies) and open the checkpoint manifest.
+        header_end = _align(iw.tell())
+        entries, off = [], header_end
+        for t, tt, nbytes in plan:
+            entries.append(TensorEntry(t.name, int(tt), off, nbytes, None))
+            off = _align(off + nbytes)
+        st = os.stat(src)
+        if manifest_path is None:
+            manifest_path = dst + ".manifest.json"
+        man = Manifest(source_path=os.path.abspath(src), source_size=st.st_size,
+                       source_mtime_ns=st.st_mtime_ns, config={"fmt": fmt},
+                       header_end=header_end, header_sha256="",
+                       tensors=entries, status="in_progress")
+
+        for i, (t, tt, _) in enumerate(plan):
             iw.begin_tensor()
+            if i == 0:
+                # Padding now exists: the header region [0, header_end) is
+                # final. Hash it and write the initial checkpoint.
+                iw.flush()
+                man.header_sha256 = sha256_file_region(dst, 0, header_end)
+                man.save(manifest_path)
+            if iw.tell() != entries[i].offset:
+                raise RuntimeError(
+                    f"offset drift on {t.name}: file at {iw.tell()}, "
+                    f"planned {entries[i].offset}")
             if tt != t.tensor_type:
                 _stream_quantize(source, iw, t, tt, working, stats,
                                  _force_chunk_rows, lib)
             else:
                 _stream_copy(source, iw, t, stats)
+            # Commit: flush data, hash the written region, checkpoint.
+            iw.flush()
+            entries[i].sha256 = sha256_file_region(
+                dst, entries[i].offset, entries[i].nbytes)
+            man.save(manifest_path)
             # Telemetry: sample RSS after each tensor; count budget breaches.
             r = rss_bytes()
             stats["peak_rss"] = max(stats["peak_rss"], r)
             if r > max_ram:
                 stats["budget_violations"] += 1
+
+        man.status = "complete"
+        man.save(manifest_path)
     finally:
         iw.close()
         source.close()

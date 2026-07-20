@@ -189,6 +189,14 @@ class IncrementalWriter:
         except OSError as exc:
             raise RuntimeError(f"write error (disk full?): {exc}") from exc
 
+    def flush(self) -> None:
+        """Flush buffered tensor data to disk (checkpoint boundary)."""
+        self._data_file().flush()
+
+    def tell(self) -> int:
+        """Current absolute position in the output file."""
+        return self._data_file().tell()
+
     def close(self) -> None:
         """Flush and close the output file. Safe to call at any lifecycle stage."""
         try:
