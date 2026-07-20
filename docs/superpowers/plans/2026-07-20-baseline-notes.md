@@ -48,6 +48,18 @@
   coherent generation (model entered Qwen3 thinking mode: "Okay, so I need to").
   No GGUF validation errors.
 
+## Q4_K_M path (2026-07-20, plan 2026-07-20-q4-k-m-path.md)
+
+- Kernels: ctypes `ggml_quantize_chunk` from `libggml-base.so` (byte-exact by
+  construction); type map encoded from empirical dump, matches llama.cpp's
+  `use_more_bits` schedule (Q6_K: output.weight + attn_v/ffn_down on layers
+  `i < n/8 | i >= 7n/8 | (i-n/8)%3==2`).
+- Reference `llama-quantize Q4_K_M`: 35.6 s unrestricted.
+- featherquant under 1G ceiling: PASS, peak RSS 583 MiB, 0 violations,
+  195.9 s (K-quant kernel dominates), 325 chunks.
+- Equivalence: **311 tensors, 0 mismatches** (byte-identical).
+- Smoke (`llama-completion`): PASS, coherent generation.
+
 ## Success criteria status (spec §14, prototype scale)
 
 1. Source > enforced RAM: PASS (1.5 GB source, 1 GB ceiling).
