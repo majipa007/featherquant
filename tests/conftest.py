@@ -1,9 +1,12 @@
 """Shared test helpers: tiny GGUF fixture builder."""
+from pathlib import Path
+
 import gguf
 import numpy as np
 
 
-def make_gguf(path, tensors, arch="llama"):
+def make_gguf(path: Path | str, tensors: dict[str, np.ndarray],
+              arch: str = "llama") -> None:
     """Write a tiny GGUF for tests.
 
     float16/float32 arrays get F16/F32 tensor types automatically;

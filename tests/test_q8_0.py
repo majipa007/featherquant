@@ -2,8 +2,7 @@
 import numpy as np
 import pytest
 
-from featherquant.q8_0 import (BLOCK, TYPE_SIZE, bf16_to_f32, dequantize_q8_0,
-                               quantize_q8_0)
+from featherquant.q8_0 import BLOCK, TYPE_SIZE, bf16_to_f32, dequantize_q8_0, quantize_q8_0
 
 
 def test_constants():

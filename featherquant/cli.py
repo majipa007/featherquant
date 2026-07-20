@@ -2,6 +2,7 @@
 import argparse
 import json
 import re
+import sys
 
 from .engine import quantize_model
 
@@ -16,7 +17,7 @@ def parse_size(s: str) -> int:
     return int(float(m[1]) * 1024 ** exp)
 
 
-def main():
+def main() -> None:
     """Entry point for the ``featherquant`` console script."""
     p = argparse.ArgumentParser(prog="featherquant",
                                 description="Memory-bounded GGUF quantization")
@@ -27,7 +28,11 @@ def main():
                    help="peak RSS budget, e.g. 2GB")
     p.add_argument("--report", help="write JSON stats here")
     a = p.parse_args()
-    stats = quantize_model(a.model, a.output, a.max_ram, report=a.report)
+    try:
+        stats = quantize_model(a.model, a.output, a.max_ram, report=a.report)
+    except RuntimeError as exc:
+        # Turn internal errors into a clean CLI failure, no traceback spam.
+        sys.exit(f"featherquant: error: {exc}")
     # Print the run stats so a bare CLI run is self-documenting.
     print(json.dumps(stats, indent=2))
 

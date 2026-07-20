@@ -8,8 +8,15 @@ GGUFReader is used for metadata only.
 from typing import Any, BinaryIO
 
 import numpy as np
-from gguf import (GGML_QUANT_VERSION, GGMLQuantizationType, GGUFReader,
-                  GGUFValueType, GGUFWriter, LlamaFileType)
+from gguf import (
+    GGML_QUANT_VERSION,
+    GGMLQuantizationType,
+    GGUFReader,
+    GGUFValueType,
+    GGUFWriter,
+    LlamaFileType,
+)
+from gguf.gguf_reader import ReaderTensor
 
 from .q8_0 import bf16_to_f32
 
@@ -41,14 +48,14 @@ class TensorSource:
         except OSError as exc:
             raise RuntimeError(f"failed to open {path} for reading: {exc}") from exc
 
-    def close(self):
+    def close(self) -> None:
         """Release the data file handle."""
         try:
             self.f.close()
         except OSError:
             pass  # closing is best-effort; nothing actionable on failure
 
-    def read_rows_f32(self, tensor, row_start: int, n_rows: int,
+    def read_rows_f32(self, tensor: ReaderTensor, row_start: int, n_rows: int,
                       buf: bytearray) -> np.ndarray:
         """Read ``n_rows`` rows starting at ``row_start`` into ``buf``.
 
@@ -75,7 +82,7 @@ class TensorSource:
         # Remaining supported type is BF16: reinterpret bits then widen.
         return bf16_to_f32(np.frombuffer(buf, np.uint16, count=n))
 
-    def read_raw(self, tensor, byte_start: int, nbytes: int,
+    def read_raw(self, tensor: ReaderTensor, byte_start: int, nbytes: int,
                  buf: bytearray) -> memoryview:
         """Read raw tensor bytes (for verbatim copies of unquantized tensors)."""
         try:

@@ -9,8 +9,10 @@ import json
 import os
 import sys
 import time
+from typing import Any
 
 from gguf import GGMLQuantizationType, LlamaFileType
+from gguf.gguf_reader import ReaderTensor
 
 from .gguf_io import ITEMSIZE, IncrementalWriter, TensorSource
 from .q8_0 import BLOCK, TYPE_SIZE, quantize_q8_0
@@ -30,7 +32,7 @@ def rss_bytes() -> int:
         raise RuntimeError(f"cannot read RSS from /proc/self/statm: {exc}") from exc
 
 
-def target_type(t):
+def target_type(t: ReaderTensor) -> GGMLQuantizationType:
     """Quantization rule mirroring llama-quantize Q8_0 defaults.
 
     2-D+ float tensors whose contiguous row length divides by 32 become
@@ -54,7 +56,8 @@ def per_row_cost(ne0: int, itemsize: int) -> int:
     return ne0 * itemsize + 20 * ne0 + (ne0 // BLOCK) * TYPE_SIZE
 
 
-def quantize_model(src, dst, max_ram, report=None, _force_chunk_rows=None):
+def quantize_model(src: str, dst: str, max_ram: int, report: str | None = None,
+                   _force_chunk_rows: int | None = None) -> dict[str, Any]:
     """Quantize ``src`` GGUF to Q8_0 at ``dst`` with peak RSS <= ``max_ram``.
 
     Returns a stats dict; optionally writes it as JSON to ``report``.
@@ -67,12 +70,12 @@ def quantize_model(src, dst, max_ram, report=None, _force_chunk_rows=None):
     if working <= 0:
         sys.exit(f"budget {max_ram} B too small: runtime already at "
                  f"{rss_bytes()} B RSS + {RESERVE} B reserve")
-    stats = {"max_ram": max_ram, "reserve": RESERVE, "working_budget": working,
+    stats: dict[str, Any] = {"max_ram": max_ram, "reserve": RESERVE, "working_budget": working,
              "bytes_read": 0, "bytes_written": 0, "peak_rss": rss_bytes(),
              "budget_violations": 0, "chunks": 0}
 
     # Plan first: every output size/offset is known before any data moves.
-    plan = []
+    plan: list[tuple[ReaderTensor, GGMLQuantizationType, int]] = []
     for t in source.tensors:
         tt = target_type(t)
         nbytes = q8_0_nbytes(int(t.n_elements)) if tt != t.tensor_type else int(t.n_bytes)
@@ -111,7 +114,9 @@ def quantize_model(src, dst, max_ram, report=None, _force_chunk_rows=None):
     return stats
 
 
-def _stream_quantize(source, iw, t, working, stats, force_rows):
+def _stream_quantize(source: TensorSource, iw: IncrementalWriter, t: ReaderTensor,
+                     working: int, stats: dict[str, Any],
+                     force_rows: int | None) -> None:
     """Quantize one tensor to Q8_0 in row chunks sized by the budget."""
     ne0 = int(t.shape[0])
     rows = int(t.n_elements) // ne0
@@ -132,7 +137,8 @@ def _stream_quantize(source, iw, t, working, stats, force_rows):
         stats["chunks"] += 1
 
 
-def _stream_copy(source, iw, t, stats):
+def _stream_copy(source: TensorSource, iw: IncrementalWriter, t: ReaderTensor,
+                 stats: dict[str, Any]) -> None:
     """Copy an unquantized tensor verbatim in bounded chunks."""
     remaining = int(t.n_bytes)
     pos = 0

@@ -6,7 +6,7 @@ requires-python = ">=3.10"
 dependencies = ["numpy>=1.26", "gguf>=0.16,<0.18"]
 
 [project.optional-dependencies]
-dev = ["pytest>=8"]
+dev = ["pytest>=8", "mypy>=1.10", "ruff>=0.4"]
 
 [project.scripts]
 featherquant = "featherquant.cli:main"
@@ -17,3 +17,26 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
 packages = ["featherquant"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+# pycodestyle (PEP 8), pyflakes, import sorting
+select = ["E", "W", "F", "I"]
+
+[tool.mypy]
+# python_version left to the interpreter: numpy 2.x stubs need >=3.12 syntax
+ignore_missing_imports = true   # gguf ships no type stubs
+disallow_untyped_defs = true
+warn_return_any = true
+warn_unused_ignores = true
+
+[[tool.mypy.overrides]]
+module = "tests.*"
+disallow_untyped_defs = false   # test signatures stay lightweight

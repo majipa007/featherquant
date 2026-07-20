@@ -3,8 +3,7 @@ import numpy as np
 import pytest
 from gguf import GGMLQuantizationType, GGUFReader
 
-from featherquant.engine import (RESERVE, per_row_cost, q8_0_nbytes,
-                                 quantize_model, rss_bytes, target_type)
+from featherquant.engine import RESERVE, per_row_cost, q8_0_nbytes, quantize_model, rss_bytes
 from featherquant.q8_0 import quantize_q8_0
 from tests.conftest import make_gguf
 

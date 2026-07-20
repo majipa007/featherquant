@@ -11,7 +11,7 @@ import numpy as np
 from gguf import GGUFReader
 
 
-def chunks_equal(a, b):
+def chunks_equal(a: np.ndarray, b: np.ndarray) -> bool:
     """Compare two (possibly memmapped) arrays 64 MiB at a time."""
     x, y = a.reshape(-1), b.reshape(-1)
     if x.dtype != y.dtype or x.size != y.size:
@@ -21,7 +21,7 @@ def chunks_equal(a, b):
                for i in range(0, x.size, step))
 
 
-def main():
+def main() -> None:
     if len(sys.argv) != 3:
         sys.exit(__doc__)
     try:
