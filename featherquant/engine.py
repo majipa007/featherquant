@@ -165,6 +165,12 @@ def quantize_model(src: str, dst: str, max_ram: int, report: str | None = None,
     plan: list[tuple[AnyTensor, GGMLQuantizationType, int]] = []
     for t in source.tensors:
         tt = spec.tensor_type(t, n_layers)
+        if (isinstance(source, SafetensorsSource) and tt == t.tensor_type
+                and len(t.shape) == 1
+                and tt != GGMLQuantizationType.F32):
+            # convert_hf_to_gguf always stores 1-D tensors as F32; match it
+            # so the direct path is byte-identical to the two-step pipeline.
+            tt = GGMLQuantizationType.F32
         nbytes = (packed_nbytes(int(t.n_elements), tt)
                   if tt != t.tensor_type else int(t.n_bytes))
         plan.append((t, tt, nbytes))
@@ -317,7 +323,10 @@ def _stream_quantize(source: "TensorSource | SafetensorsSource",
         seen_min, seen_max = min(seen_min, n), max(seen_max, n)
         before = rss_bytes()
         x = source.read_rows_f32(t, r0, n, buf)
-        if tt == GGMLQuantizationType.Q8_0:
+        if tt == GGMLQuantizationType.F32:
+            # Pure type widening (e.g. BF16 norms -> F32): x is already f32.
+            packed = x.tobytes()
+        elif tt == GGMLQuantizationType.Q8_0:
             packed = quantize_q8_0(x)
         else:
             # K-quants: byte-exact kernels from the ggml shared library.

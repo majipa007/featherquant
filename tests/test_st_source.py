@@ -172,3 +172,28 @@ def test_engine_dir_without_vocab_gguf_exits(tmp_path):
     with pytest.raises(SystemExit):
         quantize_model(str(d), str(tmp_path / "o.gguf"),
                        rss_bytes() + (512 << 20))
+
+
+def test_bf16_norms_widen_to_f32_like_convert_script(tmp_path):
+    # convert_hf_to_gguf always stores 1-D tensors as F32; the direct
+    # safetensors path must match, or outputs diverge from the two-step
+    # pipeline on every norm tensor.
+    from gguf import GGUFReader
+
+    from featherquant.engine import quantize_model, rss_bytes
+    d, vp, *_ = _make_model_dir(tmp_path)
+    fvals = (np.arange(64, dtype=np.float32) / 4)  # exact in bf16
+    u16 = (fvals.view(np.uint32) >> 16).astype(np.uint16)
+    write_shard(d / "model-00003-of-00003.safetensors",
+                {"model.layers.0.input_layernorm.weight": u16})
+    idx = json.loads((d / "model.safetensors.index.json").read_text())
+    idx["weight_map"]["model.layers.0.input_layernorm.weight"] = \
+        "model-00003-of-00003.safetensors"
+    (d / "model.safetensors.index.json").write_text(json.dumps(idx))
+    out = tmp_path / "out.gguf"
+    quantize_model(str(d), str(out), rss_bytes() + (512 << 20),
+                   vocab_gguf=str(vp))
+    r = GGUFReader(str(out))
+    tn = next(t for t in r.tensors if t.name == "blk.0.attn_norm.weight")
+    assert tn.tensor_type == GGMLQuantizationType.F32
+    assert np.array_equal(tn.data.reshape(-1), fvals)
