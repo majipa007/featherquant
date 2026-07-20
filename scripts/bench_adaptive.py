@@ -34,7 +34,8 @@ def run(model: str, out: str, max_ram: int, adaptive: bool) -> dict:
     except subprocess.CalledProcessError as exc:
         sys.exit(f"child failed ({'adaptive' if adaptive else 'static'}): "
                  f"{exc.stderr.strip()}")
-    return json.loads(proc.stdout.splitlines()[-1])
+    stats: dict = json.loads(proc.stdout.splitlines()[-1])
+    return stats
 
 
 def main() -> None:
