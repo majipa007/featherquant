@@ -131,7 +131,7 @@ architectures, leaner metadata parsing to lower the budget floor.
 ## Development
 
 ```bash
-.venv/bin/pytest          # 22 tests
+.venv/bin/pytest          # 59 tests
 .venv/bin/ruff check featherquant tests scripts
 .venv/bin/mypy featherquant scripts/compare_reference.py
 ```
