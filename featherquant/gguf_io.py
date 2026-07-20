@@ -84,3 +84,94 @@ class TensorSource:
         if got != nbytes:
             raise RuntimeError(f"short read on {tensor.name}: {got}/{nbytes} bytes")
         return memoryview(buf)[:nbytes]
+
+
+# KV keys the writer sets itself; copying them would duplicate/conflict.
+_SKIP_KEYS = {"general.architecture", "general.file_type",
+              "general.quantization_version"}
+
+
+def copy_metadata(reader: GGUFReader, writer: GGUFWriter) -> None:
+    """Copy every KV field from a source GGUF into a GGUFWriter.
+
+    Skips the virtual GGUF.* fields and keys the writer owns.
+    """
+    # ponytail: contents() materializes tokenizer lists (~tens of MB for big
+    # vocabs); stream the KV copy if it ever threatens the budget.
+    for field in reader.fields.values():
+        if field.name.startswith("GGUF.") or field.name in _SKIP_KEYS:
+            continue
+        try:
+            vtype = field.types[0]
+            if vtype == GGUFValueType.ARRAY:
+                writer.add_key_value(field.name, field.contents(), vtype,
+                                     sub_type=field.types[-1])
+            else:
+                writer.add_key_value(field.name, field.contents(), vtype)
+        except Exception as exc:
+            raise RuntimeError(f"failed to copy metadata key {field.name}: {exc}") from exc
+
+
+class IncrementalWriter:
+    """Streamed GGUF output with precomputed offsets.
+
+    GGUFWriter handles header/KV/tensor-info (and thus precomputes every
+    tensor's offset with 32-byte alignment); we stream the tensor data
+    ourselves in declaration order with the same alignment rule, so data
+    lands exactly at the precomputed offsets.
+
+    Call order: all ``add_tensor_info`` first, then ``begin_data()``, then
+    per tensor in the same order: ``begin_tensor()`` + one or more
+    ``write()``, and finally ``close()``.
+    """
+
+    def __init__(self, path: str, reader: GGUFReader, file_type):
+        try:
+            arch = reader.fields["general.architecture"].contents()
+        except KeyError as exc:
+            raise RuntimeError("source GGUF has no general.architecture key") from exc
+        self.w = GGUFWriter(path, arch)
+        copy_metadata(reader, self.w)
+        # Mark the output's overall quantization scheme.
+        self.w.add_file_type(file_type)
+        self.w.add_quantization_version(GGML_QUANT_VERSION)
+        self.f = None  # underlying data file, available after begin_data()
+
+    def add_tensor_info(self, name: str, ggml_shape, nbytes: int, ggml_type) -> None:
+        """Declare one output tensor (shape as GGUFReader reports, ne-order)."""
+        # GGUFReader reports shape in ggml ne-order; add_tensor_info expects
+        # numpy order and reverses it back when writing.
+        np_shape = [int(d) for d in reversed(list(ggml_shape))]
+        self.w.add_tensor_info(name, np_shape, np.float32, int(nbytes),
+                               raw_dtype=ggml_type)
+
+    def begin_data(self) -> None:
+        """Write header, KV data and tensor infos; open the data section."""
+        try:
+            self.w.write_header_to_file()
+            self.w.write_kv_data_to_file()
+            self.w.write_ti_data_to_file()
+        except Exception as exc:
+            raise RuntimeError(f"failed to write GGUF header/metadata: {exc}") from exc
+        # Grab the underlying file handle to stream tensor data directly.
+        self.f = self.w.fout[0]
+
+    def begin_tensor(self) -> None:
+        """Pad to the 32-byte alignment boundary the offsets were computed with."""
+        pad = (-self.f.tell()) % ALIGN
+        if pad:
+            self.f.write(b"\x00" * pad)
+
+    def write(self, data) -> None:
+        """Append one chunk of the current tensor's packed data."""
+        try:
+            self.f.write(data)
+        except OSError as exc:
+            raise RuntimeError(f"write error (disk full?): {exc}") from exc
+
+    def close(self) -> None:
+        """Flush and close the output file."""
+        try:
+            self.f.flush()
+        finally:
+            self.w.close()

@@ -51,3 +51,66 @@ def test_read_rows_bf16(tmp_path):
     x = src.read_rows_f32(src.tensors[0], 0, 2, buf)
     assert np.array_equal(x, f.ravel())
     src.close()
+
+
+# ---------------------------------------------------------------------------
+# IncrementalWriter tests
+# ---------------------------------------------------------------------------
+from gguf import GGUFReader, LlamaFileType
+
+from featherquant.gguf_io import IncrementalWriter
+from featherquant.q8_0 import quantize_q8_0
+
+
+def test_incremental_writer_roundtrip(tmp_path):
+    src_arr = (np.arange(4 * 64, dtype=np.float32).reshape(4, 64) / 8).astype(np.float16)
+    sp = tmp_path / "src.gguf"
+    make_gguf(sp, {"w": src_arr})
+    reader = GGUFReader(str(sp))
+    out = tmp_path / "out.gguf"
+    iw = IncrementalWriter(str(out), reader, LlamaFileType.MOSTLY_Q8_0)
+    t = reader.tensors[0]
+    payload = quantize_q8_0(src_arr.astype(np.float32).ravel())
+    iw.add_tensor_info(t.name, t.shape, len(payload), gguf.GGMLQuantizationType.Q8_0)
+    iw.begin_data()
+    iw.begin_tensor()
+    iw.write(payload[:170])   # two chunks proves streamed writes land correctly
+    iw.write(payload[170:])
+    iw.close()
+
+    r2 = GGUFReader(str(out))
+    t2 = r2.tensors[0]
+    assert t2.name == "w"
+    assert t2.tensor_type == gguf.GGMLQuantizationType.Q8_0
+    assert [int(d) for d in t2.shape] == [64, 4]
+    assert t2.data.tobytes() == payload
+    assert int(r2.fields["general.file_type"].contents()) == int(LlamaFileType.MOSTLY_Q8_0)
+    assert r2.fields["general.architecture"].contents() == "llama"
+
+
+def test_two_tensor_alignment_and_copy(tmp_path):
+    # Q8_0 payloads are 34-byte multiples (not 32-aligned): second tensor
+    # exercises inter-tensor padding. Second tensor is a verbatim F32 copy.
+    a = np.ones((1, 32), np.float16)
+    b = np.arange(32, dtype=np.float32)
+    sp = tmp_path / "src.gguf"
+    make_gguf(sp, {"a": a, "b": b})
+    reader = GGUFReader(str(sp))
+    ta, tb = reader.tensors[0], reader.tensors[1]
+    out = tmp_path / "out.gguf"
+    iw = IncrementalWriter(str(out), reader, LlamaFileType.MOSTLY_Q8_0)
+    pa = quantize_q8_0(a.astype(np.float32).ravel())
+    iw.add_tensor_info(ta.name, ta.shape, len(pa), gguf.GGMLQuantizationType.Q8_0)
+    iw.add_tensor_info(tb.name, tb.shape, int(tb.n_bytes), tb.tensor_type)
+    iw.begin_data()
+    iw.begin_tensor()
+    iw.write(pa)
+    iw.begin_tensor()
+    iw.write(b.tobytes())
+    iw.close()
+
+    r2 = GGUFReader(str(out))
+    by_name = {t.name: t for t in r2.tensors}
+    assert by_name["a"].data.tobytes() == pa
+    assert by_name["b"].tensor_type == gguf.GGMLQuantizationType.F32
+    assert np.array_equal(by_name["b"].data.reshape(-1), b)
