@@ -1,8 +1,12 @@
-"""Tests for sliced GGUF reads (TensorSource)."""
+"""Tests for sliced GGUF reads (TensorSource) and streamed writes
+(IncrementalWriter)."""
 import gguf
 import numpy as np
+import pytest
+from gguf import GGUFReader, LlamaFileType
 
-from featherquant.gguf_io import ITEMSIZE, TensorSource
+from featherquant.gguf_io import ITEMSIZE, IncrementalWriter, TensorSource
+from featherquant.q8_0 import quantize_q8_0
 from tests.conftest import make_gguf
 
 
@@ -56,10 +60,6 @@ def test_read_rows_bf16(tmp_path):
 # ---------------------------------------------------------------------------
 # IncrementalWriter tests
 # ---------------------------------------------------------------------------
-from gguf import GGUFReader, LlamaFileType
-
-from featherquant.gguf_io import IncrementalWriter
-from featherquant.q8_0 import quantize_q8_0
 
 
 def test_incremental_writer_roundtrip(tmp_path):
@@ -114,3 +114,23 @@ def test_two_tensor_alignment_and_copy(tmp_path):
     assert by_name["a"].data.tobytes() == pa
     assert by_name["b"].tensor_type == gguf.GGMLQuantizationType.F32
     assert np.array_equal(by_name["b"].data.reshape(-1), b)
+
+
+def test_writer_close_before_begin_data_is_safe(tmp_path):
+    # Engine error paths may close a writer that never reached begin_data();
+    # close() must release resources without raising.
+    sp = tmp_path / "src.gguf"
+    make_gguf(sp, {"w": np.ones((1, 32), np.float16)})
+    iw = IncrementalWriter(str(tmp_path / "out.gguf"), GGUFReader(str(sp)),
+                           LlamaFileType.MOSTLY_Q8_0)
+    iw.close()  # must not raise
+
+
+def test_writer_write_before_begin_data_raises(tmp_path):
+    sp = tmp_path / "src.gguf"
+    make_gguf(sp, {"w": np.ones((1, 32), np.float16)})
+    iw = IncrementalWriter(str(tmp_path / "out.gguf"), GGUFReader(str(sp)),
+                           LlamaFileType.MOSTLY_Q8_0)
+    with pytest.raises(RuntimeError):
+        iw.write(b"x")
+    iw.close()

@@ -5,9 +5,11 @@ buffers — never the GGUFReader memmap — so resident memory is exactly the
 buffer the caller sized, not whatever pages mmap happened to touch.
 GGUFReader is used for metadata only.
 """
+from typing import Any, BinaryIO
+
 import numpy as np
 from gguf import (GGML_QUANT_VERSION, GGMLQuantizationType, GGUFReader,
-                  GGUFValueType, GGUFWriter)
+                  GGUFValueType, GGUFWriter, LlamaFileType)
 
 from .q8_0 import bf16_to_f32
 
@@ -125,7 +127,8 @@ class IncrementalWriter:
     ``write()``, and finally ``close()``.
     """
 
-    def __init__(self, path: str, reader: GGUFReader, file_type):
+    def __init__(self, path: str, reader: GGUFReader,
+                 file_type: LlamaFileType):
         try:
             arch = reader.fields["general.architecture"].contents()
         except KeyError as exc:
@@ -135,14 +138,16 @@ class IncrementalWriter:
         # Mark the output's overall quantization scheme.
         self.w.add_file_type(file_type)
         self.w.add_quantization_version(GGML_QUANT_VERSION)
-        self.f = None  # underlying data file, available after begin_data()
+        # Underlying data file; only available after begin_data().
+        self.f: BinaryIO | None = None
 
-    def add_tensor_info(self, name: str, ggml_shape, nbytes: int, ggml_type) -> None:
+    def add_tensor_info(self, name: str, ggml_shape: Any, nbytes: int,
+                        ggml_type: GGMLQuantizationType) -> None:
         """Declare one output tensor (shape as GGUFReader reports, ne-order)."""
         # GGUFReader reports shape in ggml ne-order; add_tensor_info expects
         # numpy order and reverses it back when writing.
         np_shape = [int(d) for d in reversed(list(ggml_shape))]
-        self.w.add_tensor_info(name, np_shape, np.float32, int(nbytes),
+        self.w.add_tensor_info(name, np_shape, np.dtype(np.float32), int(nbytes),
                                raw_dtype=ggml_type)
 
     def begin_data(self) -> None:
@@ -154,24 +159,33 @@ class IncrementalWriter:
         except Exception as exc:
             raise RuntimeError(f"failed to write GGUF header/metadata: {exc}") from exc
         # Grab the underlying file handle to stream tensor data directly.
+        assert self.w.fout is not None  # populated by write_header_to_file()
         self.f = self.w.fout[0]
+
+    def _data_file(self) -> BinaryIO:
+        """Return the open data file, or fail loudly if begin_data() never ran."""
+        if self.f is None:
+            raise RuntimeError("begin_data() must be called before writing tensors")
+        return self.f
 
     def begin_tensor(self) -> None:
         """Pad to the 32-byte alignment boundary the offsets were computed with."""
-        pad = (-self.f.tell()) % ALIGN
+        f = self._data_file()
+        pad = (-f.tell()) % ALIGN
         if pad:
-            self.f.write(b"\x00" * pad)
+            f.write(b"\x00" * pad)
 
-    def write(self, data) -> None:
+    def write(self, data: bytes | memoryview) -> None:
         """Append one chunk of the current tensor's packed data."""
         try:
-            self.f.write(data)
+            self._data_file().write(data)
         except OSError as exc:
             raise RuntimeError(f"write error (disk full?): {exc}") from exc
 
     def close(self) -> None:
-        """Flush and close the output file."""
+        """Flush and close the output file. Safe to call at any lifecycle stage."""
         try:
-            self.f.flush()
+            if self.f is not None:
+                self.f.flush()
         finally:
             self.w.close()

@@ -79,11 +79,13 @@ def quantize_model(src, dst, max_ram, report=None, _force_chunk_rows=None):
         plan.append((t, tt, nbytes))
 
     iw = IncrementalWriter(dst, source.reader, LlamaFileType.MOSTLY_Q8_0)
-    for t, tt, nbytes in plan:
-        iw.add_tensor_info(t.name, t.shape, nbytes, tt)
-    iw.begin_data()
-
+    # From here on the writer holds an open file: every exit path must close
+    # it (close() is lifecycle-safe even before begin_data()).
     try:
+        for t, tt, nbytes in plan:
+            iw.add_tensor_info(t.name, t.shape, nbytes, tt)
+        iw.begin_data()
+
         for t, tt, _ in plan:
             iw.begin_tensor()
             if tt != t.tensor_type:
