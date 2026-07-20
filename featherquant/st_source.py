@@ -6,10 +6,10 @@ row-major tensor data. Parsing it directly (no ``safetensors`` dependency)
 gives exact control over reads: tensor bytes move through caller-owned
 buffers just like the GGUF path, never through mmap or full-tensor loads.
 """
+import io
 import json
 import struct
 from dataclasses import dataclass
-from typing import BinaryIO
 
 import numpy as np
 
@@ -59,8 +59,8 @@ def parse_shard_header(path: str) -> tuple[dict[str, StTensor], int]:
     return tensors, 8 + hlen
 
 
-def read_st_rows(f: BinaryIO, t: StTensor, data_base: int, row_start: int,
-                 n_rows: int, buf: bytearray) -> np.ndarray:
+def read_st_rows(f: io.BufferedReader, t: StTensor, data_base: int,
+                 row_start: int, n_rows: int, buf: bytearray) -> np.ndarray:
     """Read ``n_rows`` rows (last-dim-major) into ``buf``; return float32.
 
     Rows run along the LAST dim (row-major layout), which matches GGUF's
