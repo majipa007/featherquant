@@ -105,13 +105,27 @@ LLAMA_CPP_DIR=~/llama.cpp scripts/baseline.sh src.gguf ref_q8_0.gguf
 python scripts/compare_reference.py ref_q8_0.gguf fq_q8_0.gguf
 ```
 
-## Measured results (Qwen3-0.6B, BF16 1.5 GB → Q8_0)
+## Measured results
+
+Qwen3-0.6B (BF16 1.5 GB → Q8_0):
 
 | | llama-quantize | featherquant @ 1G ceiling |
 |---|---|---|
 | Peak RSS | 2.74 GB | 0.59 GB |
 | Wall clock | 7.9 s | 30.1 s |
-| Output | reference | byte-identical (311/311 tensors) |
+| Output | reference | byte-identical (311/311 tensors, Q8_0 and Q4_K_M) |
+
+Qwen3-14B (BF16 29.5 GB → Q8_0 15.7 GB) on a 15 GB-RAM machine:
+
+| | llama-quantize | featherquant @ 1 GiB kernel ceiling |
+|---|---|---|
+| Result | OOM-killed (needs ~30 GB) | **PASS**, 0 violations |
+| Peak RSS | — | 560 MiB |
+| Wall clock | — | 431 s |
+| Source-to-ceiling ratio | — | **29.5x** |
+
+3 GiB- and 1 GiB-ceiling outputs are byte-identical (chunking never
+changes bytes).
 
 Details in `docs/superpowers/plans/2026-07-20-baseline-notes.md`.
 

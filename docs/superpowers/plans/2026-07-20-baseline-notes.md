@@ -131,3 +131,11 @@
 - Per-tensor byte equivalence vs llama-quantize is NOT verifiable at 14B on
   this machine (no reference producible); kernel byte-parity was proven at
   0.6B where the reference exists.
+
+## Scale proof stretch — 14B under a 1 GiB ceiling
+
+- featherquant @ **1G ceiling: PASS** — same 29.5 GB source, 853 chunks,
+  431 s, `budget_violations: 0`, `rss_metadata_peak` 560 MiB.
+- Source-to-ceiling ratio ≈ **29.5x** (spec's research target was 10x).
+- Outputs from the 3G and 1G runs are **byte-identical** (`cmp`): chunking
+  invariance holds at 14B scale, not just in unit tests.
