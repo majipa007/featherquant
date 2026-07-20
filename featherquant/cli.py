@@ -23,13 +23,17 @@ def main() -> None:
                                 description="Memory-bounded GGUF quantization")
     p.add_argument("--model", required=True, help="source F16/BF16 GGUF")
     p.add_argument("--output", required=True, help="output GGUF path")
-    p.add_argument("--format", default="q8_0", choices=["q8_0"])
+    p.add_argument("--format", default="q8_0", choices=["q8_0", "q4_k_m"])
     p.add_argument("--max-ram", required=True, type=parse_size,
                    help="peak RSS budget, e.g. 2GB")
     p.add_argument("--report", help="write JSON stats here")
+    p.add_argument("--ggml-lib",
+                   help="path to libggml-base.so for K-quant formats "
+                        "(default: $GGML_LIB or the built-in path)")
     a = p.parse_args()
     try:
-        stats = quantize_model(a.model, a.output, a.max_ram, report=a.report)
+        stats = quantize_model(a.model, a.output, a.max_ram, report=a.report,
+                               fmt=a.format, ggml_lib=a.ggml_lib)
     except RuntimeError as exc:
         # Turn internal errors into a clean CLI failure, no traceback spam.
         sys.exit(f"featherquant: error: {exc}")

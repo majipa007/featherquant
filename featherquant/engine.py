@@ -11,9 +11,11 @@ import sys
 import time
 from typing import Any
 
-from gguf import GGMLQuantizationType, LlamaFileType
+from gguf import GGML_QUANT_SIZES, GGMLQuantizationType
 from gguf.gguf_reader import ReaderTensor
 
+from .formats import FORMATS
+from .ggml_backend import GgmlLib, load_ggml
 from .gguf_io import ITEMSIZE, IncrementalWriter, TensorSource
 from .q8_0 import BLOCK, TYPE_SIZE, quantize_q8_0
 
@@ -32,15 +34,10 @@ def rss_bytes() -> int:
         raise RuntimeError(f"cannot read RSS from /proc/self/statm: {exc}") from exc
 
 
-def target_type(t: ReaderTensor) -> GGMLQuantizationType:
-    """Quantization rule mirroring llama-quantize Q8_0 defaults.
-
-    2-D+ float tensors whose contiguous row length divides by 32 become
-    Q8_0; everything else keeps its source type and bytes.
-    """
-    if len(t.shape) >= 2 and t.tensor_type in ITEMSIZE and int(t.shape[0]) % BLOCK == 0:
-        return GGMLQuantizationType.Q8_0
-    return t.tensor_type
+def packed_nbytes(n_elements: int, ggml_type: GGMLQuantizationType) -> int:
+    """Packed size for any ggml type: deterministic from element count."""
+    blk, tsz = GGML_QUANT_SIZES[ggml_type]
+    return n_elements // blk * tsz
 
 
 def q8_0_nbytes(n_elements: int) -> int:
@@ -48,22 +45,33 @@ def q8_0_nbytes(n_elements: int) -> int:
     return n_elements // BLOCK * TYPE_SIZE
 
 
-def per_row_cost(ne0: int, itemsize: int) -> int:
+def per_row_cost(ne0: int, itemsize: int,
+                 out_type: GGMLQuantizationType = GGMLQuantizationType.Q8_0) -> int:
     """Estimated working-set bytes to process one row of length ne0."""
     # ponytail: crude static model — read buf + ~5 float32-sized numpy
-    # temporaries inside quantize_q8_0 + packed row; replaced by measured
+    # temporaries inside the kernel + packed row; replaced by measured
     # feedback in the Phase 3 adaptive controller.
-    return ne0 * itemsize + 20 * ne0 + (ne0 // BLOCK) * TYPE_SIZE
+    return ne0 * itemsize + 20 * ne0 + packed_nbytes(ne0, out_type)
 
 
 def quantize_model(src: str, dst: str, max_ram: int, report: str | None = None,
+                   fmt: str = "q8_0", ggml_lib: str | None = None,
                    _force_chunk_rows: int | None = None) -> dict[str, Any]:
-    """Quantize ``src`` GGUF to Q8_0 at ``dst`` with peak RSS <= ``max_ram``.
+    """Quantize ``src`` GGUF to format ``fmt`` at ``dst``, peak RSS <= ``max_ram``.
 
     Returns a stats dict; optionally writes it as JSON to ``report``.
     ``_force_chunk_rows`` is a test hook that overrides the planner.
     """
     t0 = time.monotonic()
+    if fmt not in FORMATS:
+        sys.exit(f"unknown format {fmt!r}; supported: {sorted(FORMATS)}")
+    spec = FORMATS[fmt]
+    lib: GgmlLib | None = None
+    if spec.needs_ggml:
+        try:
+            lib = load_ggml(ggml_lib)
+        except RuntimeError as exc:
+            sys.exit(f"format {fmt!r} needs the ggml library: {exc}")
     source = TensorSource(src)
     # Everything not yet allocated is available for per-chunk working set.
     working = max_ram - rss_bytes() - RESERVE
@@ -74,14 +82,21 @@ def quantize_model(src: str, dst: str, max_ram: int, report: str | None = None,
              "bytes_read": 0, "bytes_written": 0, "peak_rss": rss_bytes(),
              "budget_violations": 0, "chunks": 0}
 
+    # Layer count feeds the layer-dependent type rules (0 when absent, e.g.
+    # in synthetic test fixtures — rules degrade to their layer-free parts).
+    arch = str(source.reader.fields["general.architecture"].contents())
+    bc_field = source.reader.fields.get(f"{arch}.block_count")
+    n_layers = int(bc_field.contents()) if bc_field is not None else 0
+
     # Plan first: every output size/offset is known before any data moves.
     plan: list[tuple[ReaderTensor, GGMLQuantizationType, int]] = []
     for t in source.tensors:
-        tt = target_type(t)
-        nbytes = q8_0_nbytes(int(t.n_elements)) if tt != t.tensor_type else int(t.n_bytes)
+        tt = spec.tensor_type(t, n_layers)
+        nbytes = (packed_nbytes(int(t.n_elements), tt)
+                  if tt != t.tensor_type else int(t.n_bytes))
         plan.append((t, tt, nbytes))
 
-    iw = IncrementalWriter(dst, source.reader, LlamaFileType.MOSTLY_Q8_0)
+    iw = IncrementalWriter(dst, source.reader, spec.file_type)
     # From here on the writer holds an open file: every exit path must close
     # it (close() is lifecycle-safe even before begin_data()).
     try:
@@ -92,7 +107,8 @@ def quantize_model(src: str, dst: str, max_ram: int, report: str | None = None,
         for t, tt, _ in plan:
             iw.begin_tensor()
             if tt != t.tensor_type:
-                _stream_quantize(source, iw, t, working, stats, _force_chunk_rows)
+                _stream_quantize(source, iw, t, tt, working, stats,
+                                 _force_chunk_rows, lib)
             else:
                 _stream_copy(source, iw, t, stats)
             # Telemetry: sample RSS after each tensor; count budget breaches.
@@ -115,22 +131,29 @@ def quantize_model(src: str, dst: str, max_ram: int, report: str | None = None,
 
 
 def _stream_quantize(source: TensorSource, iw: IncrementalWriter, t: ReaderTensor,
-                     working: int, stats: dict[str, Any],
-                     force_rows: int | None) -> None:
-    """Quantize one tensor to Q8_0 in row chunks sized by the budget."""
+                     tt: GGMLQuantizationType, working: int, stats: dict[str, Any],
+                     force_rows: int | None, lib: GgmlLib | None) -> None:
+    """Quantize one tensor to type ``tt`` in row chunks sized by the budget."""
     ne0 = int(t.shape[0])
     rows = int(t.n_elements) // ne0
     isz = ITEMSIZE[t.tensor_type]
-    chunk = force_rows or min(rows, working // per_row_cost(ne0, isz))
+    chunk = force_rows or min(rows, working // per_row_cost(ne0, isz, tt))
     if chunk < 1:
         # Report the minimum feasible budget instead of thrashing.
         sys.exit(f"budget too small for tensor {t.name}: one row needs about "
-                 f"{per_row_cost(ne0, isz)} B working set on top of runtime + reserve")
+                 f"{per_row_cost(ne0, isz, tt)} B working set on top of "
+                 "runtime + reserve")
     # One reusable read buffer for the whole tensor.
     buf = bytearray(chunk * ne0 * isz)
     for r0 in range(0, rows, chunk):
         n = min(chunk, rows - r0)
-        packed = quantize_q8_0(source.read_rows_f32(t, r0, n, buf))
+        x = source.read_rows_f32(t, r0, n, buf)
+        if tt == GGMLQuantizationType.Q8_0:
+            packed = quantize_q8_0(x)
+        else:
+            # K-quants: byte-exact kernels from the ggml shared library.
+            assert lib is not None  # guaranteed by quantize_model for needs_ggml
+            packed = lib.quantize_rows(x, tt, ne0)
         iw.write(packed)
         stats["bytes_read"] += n * ne0 * isz
         stats["bytes_written"] += len(packed)

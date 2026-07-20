@@ -73,3 +73,31 @@ def test_report_written(tmp_path):
                    rss_bytes() + (512 << 20), report=str(rp))
     stats = json.loads(rp.read_text())
     assert stats["bytes_read"] > 0 and stats["peak_rss"] > 0 and "elapsed_s" in stats
+
+
+def test_engine_q4_k_m_format(tmp_path):
+    from featherquant.ggml_backend import load_ggml
+    try:
+        lib = load_ggml()
+    except RuntimeError as exc:
+        pytest.skip(f"libggml not available: {exc}")
+    rng = np.random.default_rng(0)
+    w = rng.standard_normal((8, 256)).astype(np.float16)   # K-quantizable
+    norm = rng.standard_normal(64).astype(np.float32)      # copied
+    sp = tmp_path / "src.gguf"
+    make_gguf(sp, {"blk.0.attn_q.weight": w, "blk.0.attn_norm.weight": norm})
+    big = rss_bytes() + (512 << 20)
+    o1, o2 = tmp_path / "a.gguf", tmp_path / "b.gguf"
+    quantize_model(str(sp), str(o1), big, fmt="q4_k_m", _force_chunk_rows=3)
+    quantize_model(str(sp), str(o2), big, fmt="q4_k_m")
+    assert o1.read_bytes() == o2.read_bytes()  # chunking must not change bytes
+
+    r = GGUFReader(str(o1))
+    by_name = {t.name: t for t in r.tensors}
+    tq = by_name["blk.0.attn_q.weight"]
+    assert tq.tensor_type == GGMLQuantizationType.Q4_K
+    ref = lib.quantize_rows(w.astype(np.float32).ravel(), GGMLQuantizationType.Q4_K, 256)
+    assert tq.data.tobytes() == ref
+    assert by_name["blk.0.attn_norm.weight"].tensor_type == GGMLQuantizationType.F32
+    import gguf
+    assert int(r.fields["general.file_type"].contents()) == int(gguf.LlamaFileType.MOSTLY_Q4_K_M)
