@@ -55,6 +55,16 @@ class TensorSource:
         except OSError:
             pass  # closing is best-effort; nothing actionable on failure
 
+    def release_metadata(self) -> None:
+        """Free GGUFReader's KV parse objects (~0.5 GiB on 150k-token vocabs).
+
+        GGUFReader materializes hundreds of thousands of numpy view objects
+        for large tokenizer arrays and keeps them alive via ``fields``. Call
+        this once all metadata reads are done — tensor slicing needs only
+        the ReaderTensor shape/type/offset scalars, which stay valid.
+        """
+        self.reader.fields.clear()
+
     def read_rows_f32(self, tensor: ReaderTensor, row_start: int, n_rows: int,
                       buf: bytearray) -> np.ndarray:
         """Read ``n_rows`` rows starting at ``row_start`` into ``buf``.

@@ -125,11 +125,12 @@ def test_adaptive_shrinks_under_simulated_pressure(tmp_path, monkeypatch):
 
     def fake_rss():
         calls["n"] += 1
-        # First few calls (setup): flat baseline. After that each call adds
-        # 64 MiB, so every chunk "costs" a huge measured delta.
-        if calls["n"] <= 2:
+        # Setup calls (stats init, metadata-release bookkeeping, budget
+        # sizing): flat baseline. After that each call adds 64 MiB, so
+        # every chunk "costs" a huge measured delta.
+        if calls["n"] <= 4:
             return base
-        return base + (64 << 20) * (calls["n"] - 2)
+        return base + (64 << 20) * (calls["n"] - 4)
 
     monkeypatch.setattr(eng, "rss_bytes", fake_rss)
     # Working budget sized so the first chunk is ~4 of 10 rows.
@@ -142,3 +143,19 @@ def test_adaptive_shrinks_under_simulated_pressure(tmp_path, monkeypatch):
     r = GGUFReader(str(tmp_path / "o.gguf"))
     tq = next(t for t in r.tensors if t.name == "blk.0.attn_q.weight")
     assert tq.data.tobytes() == quantize_q8_0(w.astype(np.float32).ravel())
+
+
+REAL_MODEL = "/home/sukuna/models/qwen3-0.6b-bf16.gguf"
+
+
+@pytest.mark.skipif(not __import__("os").path.exists(REAL_MODEL),
+                    reason="real model not present")
+def test_metadata_overhead_released_for_small_budgets(tmp_path):
+    # GGUFReader's KV parse holds ~0.5 GiB of objects on 150k-token vocabs.
+    # After the writer copies metadata those objects must be released so the
+    # working budget gets that memory back; a 400 MiB margin over current
+    # RSS is impossible otherwise.
+    base = rss_bytes()
+    stats = quantize_model(REAL_MODEL, str(tmp_path / "o.gguf"),
+                           base + (400 << 20))
+    assert stats["budget_violations"] == 0

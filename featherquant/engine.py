@@ -141,14 +141,6 @@ def quantize_model(src: str, dst: str, max_ram: int, report: str | None = None,
         except RuntimeError as exc:
             sys.exit(f"format {fmt!r} needs the ggml library: {exc}")
     source = TensorSource(src)
-    # Everything not yet allocated is available for per-chunk working set.
-    working = max_ram - rss_bytes() - RESERVE
-    if working <= 0:
-        sys.exit(f"budget {max_ram} B too small: runtime already at "
-                 f"{rss_bytes()} B RSS + {RESERVE} B reserve")
-    stats: dict[str, Any] = {"max_ram": max_ram, "reserve": RESERVE, "working_budget": working,
-             "bytes_read": 0, "bytes_written": 0, "peak_rss": rss_bytes(),
-             "budget_violations": 0, "chunks": 0}
 
     # Layer count feeds the layer-dependent type rules (0 when absent, e.g.
     # in synthetic test fixtures — rules degrade to their layer-free parts).
@@ -163,6 +155,11 @@ def quantize_model(src: str, dst: str, max_ram: int, report: str | None = None,
         nbytes = (packed_nbytes(int(t.n_elements), tt)
                   if tt != t.tensor_type else int(t.n_bytes))
         plan.append((t, tt, nbytes))
+
+    stats: dict[str, Any] = {"max_ram": max_ram, "reserve": RESERVE,
+                             "working_budget": 0, "bytes_read": 0,
+                             "bytes_written": 0, "peak_rss": rss_bytes(),
+                             "budget_violations": 0, "chunks": 0}
 
     if manifest_path is None:
         manifest_path = dst + ".manifest.json"
@@ -185,6 +182,22 @@ def quantize_model(src: str, dst: str, max_ram: int, report: str | None = None,
     # From here on the writer holds an open file: every exit path must close
     # it (close() is lifecycle-safe even before begin_data()).
     try:
+        # KV metadata is fully consumed (writer ctor copied it; plan and
+        # layer rules are final). Drop GGUFReader's huge KV object graph —
+        # ~0.5 GiB on 150k-token vocabs — BEFORE sizing the working budget,
+        # so streaming gets that memory back. The startup transient itself
+        # is unavoidable with GGUFReader and defines the minimum feasible
+        # budget; it is recorded in the stats for transparency.
+        rss_metadata_peak = rss_bytes()
+        source.release_metadata()
+        gc.collect()
+        working = max_ram - rss_bytes() - RESERVE
+        if working <= 0:
+            sys.exit(f"budget {max_ram} B too small: runtime still at "
+                     f"{rss_bytes()} B RSS after metadata release "
+                     f"+ {RESERVE} B reserve")
+        stats.update(working_budget=working, rss_metadata_peak=rss_metadata_peak)
+
         if not resuming:
             assert isinstance(iw, IncrementalWriter)
             for t, tt, nbytes in plan:
