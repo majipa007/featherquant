@@ -11,6 +11,7 @@ import json
 import os
 import struct
 from dataclasses import dataclass
+from typing import Any
 
 import numpy as np
 from gguf import MODEL_ARCH_NAMES, GGMLQuantizationType, GGUFReader, get_tensor_name_map
@@ -185,15 +186,15 @@ class SafetensorsSource:
                 f"{model_dir}: {unmapped[:5]} — refusing to emit a partial "
                 "model")
 
-    def read_rows_f32(self, tensor: StReaderTensor, row_start: int,
+    def read_rows_f32(self, tensor: "StReaderTensor | Any", row_start: int,
                       n_rows: int, buf: bytearray) -> np.ndarray:
         """Read rows via the owning shard (same contract as TensorSource)."""
         return read_st_rows(self._files[tensor.shard], tensor.st,
                             self._data_base[tensor.shard],
                             row_start, n_rows, buf)
 
-    def read_raw(self, tensor: StReaderTensor, byte_start: int, nbytes: int,
-                 buf: bytearray) -> memoryview:
+    def read_raw(self, tensor: "StReaderTensor | Any", byte_start: int,
+                 nbytes: int, buf: bytearray) -> memoryview:
         """Raw byte range of a tensor (verbatim copies)."""
         f = self._files[tensor.shard]
         try:

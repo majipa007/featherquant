@@ -65,8 +65,8 @@ class TensorSource:
         """
         self.reader.fields.clear()
 
-    def read_rows_f32(self, tensor: ReaderTensor, row_start: int, n_rows: int,
-                      buf: bytearray) -> np.ndarray:
+    def read_rows_f32(self, tensor: "ReaderTensor | Any", row_start: int,
+                      n_rows: int, buf: bytearray) -> np.ndarray:
         """Read ``n_rows`` rows starting at ``row_start`` into ``buf``.
 
         Returns a float32 array of length ``n_rows * ne0``.  The returned
@@ -92,8 +92,8 @@ class TensorSource:
         # Remaining supported type is BF16: reinterpret bits then widen.
         return bf16_to_f32(np.frombuffer(buf, np.uint16, count=n))
 
-    def read_raw(self, tensor: ReaderTensor, byte_start: int, nbytes: int,
-                 buf: bytearray) -> memoryview:
+    def read_raw(self, tensor: "ReaderTensor | Any", byte_start: int,
+                 nbytes: int, buf: bytearray) -> memoryview:
         """Read raw tensor bytes (for verbatim copies of unquantized tensors)."""
         try:
             self.f.seek(int(tensor.data_offset) + byte_start)

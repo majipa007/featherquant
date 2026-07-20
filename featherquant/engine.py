@@ -21,7 +21,10 @@ from .ggml_backend import GgmlLib, load_ggml
 from .gguf_io import ALIGN, ITEMSIZE, IncrementalWriter, ResumeWriter, TensorSource
 from .manifest import Manifest, TensorEntry, sha256_file_region
 from .q8_0 import BLOCK, TYPE_SIZE, quantize_q8_0
-from .st_source import SafetensorsSource
+from .st_source import SafetensorsSource, StReaderTensor
+
+# A plannable tensor from either source (duck-compatible fields).
+AnyTensor = ReaderTensor | StReaderTensor
 
 # ponytail: fixed 64 MiB safety reserve; adaptive governor is Phase 3.
 RESERVE = 64 << 20
@@ -64,7 +67,7 @@ def _align(n: int) -> int:
 
 
 def _prepare_resume(src: str, dst: str, manifest_path: str,
-                    plan: list[tuple[ReaderTensor, GGMLQuantizationType, int]],
+                    plan: list[tuple[AnyTensor, GGMLQuantizationType, int]],
                     fmt: str) -> tuple[Manifest, int]:
     """Validate a saved manifest against the re-planned job.
 
@@ -159,7 +162,7 @@ def quantize_model(src: str, dst: str, max_ram: int, report: str | None = None,
     n_layers = int(bc_field.contents()) if bc_field is not None else 0
 
     # Plan first: every output size/offset is known before any data moves.
-    plan: list[tuple[ReaderTensor, GGMLQuantizationType, int]] = []
+    plan: list[tuple[AnyTensor, GGMLQuantizationType, int]] = []
     for t in source.tensors:
         tt = spec.tensor_type(t, n_layers)
         nbytes = (packed_nbytes(int(t.n_elements), tt)
@@ -277,7 +280,7 @@ def quantize_model(src: str, dst: str, max_ram: int, report: str | None = None,
 
 def _stream_quantize(source: "TensorSource | SafetensorsSource",
                      iw: "IncrementalWriter | ResumeWriter",
-                     t: ReaderTensor, tt: GGMLQuantizationType, working: int,
+                     t: AnyTensor, tt: GGMLQuantizationType, working: int,
                      stats: dict[str, Any], force_rows: int | None,
                      lib: GgmlLib | None, adaptive: bool = True) -> None:
     """Quantize one tensor to type ``tt`` in row chunks sized by the budget.
@@ -342,7 +345,7 @@ def _stream_quantize(source: "TensorSource | SafetensorsSource",
 
 
 def _stream_copy(source: "TensorSource | SafetensorsSource",
-                 iw: "IncrementalWriter | ResumeWriter", t: ReaderTensor,
+                 iw: "IncrementalWriter | ResumeWriter", t: AnyTensor,
                  stats: dict[str, Any]) -> None:
     """Copy an unquantized tensor verbatim in bounded chunks."""
     remaining = int(t.n_bytes)
