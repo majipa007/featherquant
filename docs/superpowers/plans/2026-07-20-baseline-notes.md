@@ -71,3 +71,45 @@
 6. Recovery after interruption: out of scope (Phase 4).
 7. RAM/runtime trade-off: 2.74 GB/7.9 s (baseline) vs 0.59 GB/30.1 s (featherquant).
 8. Reproducible manifest: partial (report JSON + deterministic output).
+
+## Checkpoint/resume (plan 2026-07-20-checkpoint-resume.md)
+
+- Per-tensor atomic sidecar manifest (sha256 per committed tensor, header
+  hash, source identity). `--resume` verifies everything before continuing.
+- Torture test (`scripts/kill_resume_test.sh`, random SIGKILL, 20 s window):
+  **PASS — byte-identical after 8 interrupted runs** on Qwen3-0.6B @ 1 GB.
+- Harness lesson: the kill window must exceed startup + largest-tensor
+  commit (~13 s here: ~5 s startup + ~8 s for the 165 MB token_embd);
+  windows below that make zero net progress by construction.
+
+## Adaptive block sizing (plan 2026-07-20-adaptive-blocks.md)
+
+- EWMA controller live; correctness invariant (bytes independent of
+  chunking) holds by test.
+- Bench (Qwen3-0.6B @ 768M): static 539.8 MiB peak / 74.9 s vs adaptive
+  539.9 MiB / 67.2 s, 0 violations both, identical chunk counts — peak is
+  dominated by the GGUFReader metadata transient, so adaptation is invisible
+  on a model this small. Re-bench at 14B scale later.
+
+## Metadata memory finding (fix 089003a)
+
+- gguf's GGUFReader materializes ~0.5 GiB of Python/numpy objects parsing a
+  151k-token vocab (anon heap, NOT mmap pages). featherquant now releases
+  them before sizing the working budget; the transient startup peak remains
+  and defines the ~600 MiB minimum feasible budget on such models
+  (reported as `rss_metadata_peak`).
+
+## Safetensors input (plan 2026-07-20-safetensors-input.md)
+
+- Direct HF-checkpoint quantization (Qwen3 only), metadata via
+  `--vocab-only` GGUF (5.9 MB for Qwen3-0.6B), no BF16 intermediate.
+- 1-D BF16 tensors widen to F32 to match `convert_hf_to_gguf` (caught by
+  equivalence gate: 113 norm-tensor mismatches before the fix).
+- Equivalence vs two-step pipeline: **311 tensors, 0 mismatches**.
+
+## Scale proof part 1 (runbook 2026-07-20-scale-proof-runbook.md)
+
+- Qwen3-14B BF16 GGUF: 29.5 GB, machine RAM 15 GB total — the conventional
+  baseline CANNOT run unrestricted on this hardware at all.
+- `llama-quantize` under 3G ceiling: exit 137 (OOM-killed) as expected.
+- featherquant @ 3G ceiling: recorded below when the run completes.
