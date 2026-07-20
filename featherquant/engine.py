@@ -21,6 +21,7 @@ from .ggml_backend import GgmlLib, load_ggml
 from .gguf_io import ALIGN, ITEMSIZE, IncrementalWriter, ResumeWriter, TensorSource
 from .manifest import Manifest, TensorEntry, sha256_file_region
 from .q8_0 import BLOCK, TYPE_SIZE, quantize_q8_0
+from .st_source import SafetensorsSource
 
 # ponytail: fixed 64 MiB safety reserve; adaptive governor is Phase 3.
 RESERVE = 64 << 20
@@ -119,7 +120,7 @@ def _prepare_resume(src: str, dst: str, manifest_path: str,
 def quantize_model(src: str, dst: str, max_ram: int, report: str | None = None,
                    fmt: str = "q8_0", ggml_lib: str | None = None,
                    manifest_path: str | None = None, resume: bool = False,
-                   adaptive: bool = True,
+                   adaptive: bool = True, vocab_gguf: str | None = None,
                    _force_chunk_rows: int | None = None,
                    _fail_after: int | None = None) -> dict[str, Any]:
     """Quantize ``src`` GGUF to format ``fmt`` at ``dst``, peak RSS <= ``max_ram``.
@@ -140,7 +141,16 @@ def quantize_model(src: str, dst: str, max_ram: int, report: str | None = None,
             lib = load_ggml(ggml_lib)
         except RuntimeError as exc:
             sys.exit(f"format {fmt!r} needs the ggml library: {exc}")
-    source = TensorSource(src)
+    # Source dispatch: a directory is a sharded-safetensors HF checkpoint,
+    # a file is a GGUF.
+    source: TensorSource | SafetensorsSource
+    if os.path.isdir(src):
+        if not vocab_gguf:
+            sys.exit(f"{src} is a safetensors directory: pass --vocab-gguf "
+                     "(create one with scripts/make_vocab_gguf.sh)")
+        source = SafetensorsSource(src, vocab_gguf)
+    else:
+        source = TensorSource(src)
 
     # Layer count feeds the layer-dependent type rules (0 when absent, e.g.
     # in synthetic test fixtures — rules degrade to their layer-free parts).
@@ -265,7 +275,8 @@ def quantize_model(src: str, dst: str, max_ram: int, report: str | None = None,
     return stats
 
 
-def _stream_quantize(source: TensorSource, iw: "IncrementalWriter | ResumeWriter",
+def _stream_quantize(source: "TensorSource | SafetensorsSource",
+                     iw: "IncrementalWriter | ResumeWriter",
                      t: ReaderTensor, tt: GGMLQuantizationType, working: int,
                      stats: dict[str, Any], force_rows: int | None,
                      lib: GgmlLib | None, adaptive: bool = True) -> None:
@@ -330,7 +341,8 @@ def _stream_quantize(source: TensorSource, iw: "IncrementalWriter | ResumeWriter
             "per_row_final": round(ctrl.per_row, 1)}
 
 
-def _stream_copy(source: TensorSource, iw: "IncrementalWriter | ResumeWriter", t: ReaderTensor,
+def _stream_copy(source: "TensorSource | SafetensorsSource",
+                 iw: "IncrementalWriter | ResumeWriter", t: ReaderTensor,
                  stats: dict[str, Any]) -> None:
     """Copy an unquantized tensor verbatim in bounded chunks."""
     remaining = int(t.n_bytes)

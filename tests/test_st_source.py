@@ -146,3 +146,29 @@ def test_safetensors_source_refuses_unmapped_tensor(tmp_path):
     (d / "model.safetensors.index.json").write_text(json.dumps(idx))
     with pytest.raises(RuntimeError, match="mystery"):
         SafetensorsSource(str(d), str(vp))
+
+
+def test_engine_quantizes_safetensors_dir(tmp_path):
+    from gguf import GGUFReader
+
+    from featherquant.engine import quantize_model, rss_bytes
+    from featherquant.q8_0 import quantize_q8_0
+    d, vp, q, nrm, emb = _make_model_dir(tmp_path)
+    out = tmp_path / "out.gguf"
+    quantize_model(str(d), str(out), rss_bytes() + (512 << 20),
+                   vocab_gguf=str(vp))
+    r = GGUFReader(str(out))
+    by_name = {t.name: t for t in r.tensors}
+    tq = by_name["blk.0.attn_q.weight"]
+    assert tq.tensor_type == GGMLQuantizationType.Q8_0
+    assert tq.data.tobytes() == quantize_q8_0(q.astype(np.float32).ravel())
+    assert np.array_equal(by_name["output_norm.weight"].data.reshape(-1), nrm)
+    assert r.fields["general.architecture"].contents() == "qwen3"
+
+
+def test_engine_dir_without_vocab_gguf_exits(tmp_path):
+    from featherquant.engine import quantize_model, rss_bytes
+    d, _, *_ = _make_model_dir(tmp_path)
+    with pytest.raises(SystemExit):
+        quantize_model(str(d), str(tmp_path / "o.gguf"),
+                       rss_bytes() + (512 << 20))

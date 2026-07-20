@@ -21,7 +21,12 @@ def main() -> None:
     """Entry point for the ``featherquant`` console script."""
     p = argparse.ArgumentParser(prog="featherquant",
                                 description="Memory-bounded GGUF quantization")
-    p.add_argument("--model", required=True, help="source F16/BF16 GGUF")
+    p.add_argument("--model", required=True,
+                   help="source F16/BF16 GGUF file, or a sharded-safetensors "
+                        "HF model directory (needs --vocab-gguf)")
+    p.add_argument("--vocab-gguf",
+                   help="metadata/tokenizer-only GGUF for safetensors input "
+                        "(scripts/make_vocab_gguf.sh)")
     p.add_argument("--output", required=True, help="output GGUF path")
     p.add_argument("--format", default="q8_0", choices=["q8_0", "q4_k_m"])
     p.add_argument("--max-ram", required=True, type=parse_size,
@@ -37,7 +42,7 @@ def main() -> None:
     try:
         stats = quantize_model(a.model, a.output, a.max_ram, report=a.report,
                                fmt=a.format, ggml_lib=a.ggml_lib,
-                               resume=a.resume)
+                               resume=a.resume, vocab_gguf=a.vocab_gguf)
     except RuntimeError as exc:
         # Turn internal errors into a clean CLI failure, no traceback spam.
         sys.exit(f"featherquant: error: {exc}")
