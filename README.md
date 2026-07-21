@@ -76,6 +76,11 @@ llama.cpp's `libggml-base.so` via ctypes — point `--ggml-lib`/`$GGML_LIB` at
 it), `--resume` (continue an interrupted run), `--vocab-gguf` (required for
 safetensors input).
 
+Runs show a live dashboard (progress bar with ETA, current tensor, RSS
+gauge vs budget) when stderr is a terminal; pipes/CI get plain
+line-per-tensor output automatically. Control it with
+`--ui rich|plain|none`; add `--json` to print the stats dict to stdout.
+
 ### Quantize a Hugging Face checkpoint directly (no BF16 intermediate)
 
 ```bash

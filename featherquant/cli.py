@@ -4,7 +4,10 @@ import json
 import re
 import sys
 
+from rich.console import Console
+
 from .engine import quantize_model
+from .ui import Dashboard, PlainReporter, summary_table
 
 
 def parse_size(s: str) -> int:
@@ -38,16 +41,37 @@ def main() -> None:
     p.add_argument("--resume", action="store_true",
                    help="continue an interrupted run from its manifest "
                         "(verifies committed tensors first)")
+    p.add_argument("--ui", choices=["auto", "rich", "plain", "none"],
+                   default="auto",
+                   help="progress display: rich dashboard, plain lines, or "
+                        "none (auto = rich on a TTY, plain otherwise)")
+    p.add_argument("--json", action="store_true",
+                   help="print the stats JSON to stdout")
     a = p.parse_args()
+    mode = a.ui if a.ui != "auto" else (
+        "rich" if sys.stderr.isatty() else "plain")
+    reporter: Dashboard | PlainReporter | None
+    if mode == "rich":
+        reporter = Dashboard()
+    elif mode == "plain":
+        reporter = PlainReporter()
+    else:
+        reporter = None
     try:
         stats = quantize_model(a.model, a.output, a.max_ram, report=a.report,
                                fmt=a.format, ggml_lib=a.ggml_lib,
-                               resume=a.resume, vocab_gguf=a.vocab_gguf)
+                               resume=a.resume, vocab_gguf=a.vocab_gguf,
+                               progress=reporter)
     except RuntimeError as exc:
         # Turn internal errors into a clean CLI failure, no traceback spam.
         sys.exit(f"featherquant: error: {exc}")
-    # Print the run stats so a bare CLI run is self-documenting.
-    print(json.dumps(stats, indent=2))
+    finally:
+        if reporter is not None:
+            reporter.close()   # always restore the terminal, even on error
+    if a.json:
+        print(json.dumps(stats, indent=2))       # stdout: machine-readable
+    elif mode != "none":
+        Console(stderr=True).print(summary_table(stats))
 
 
 if __name__ == "__main__":

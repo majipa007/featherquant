@@ -20,7 +20,7 @@ def test_parse_size():
         cli.parse_size("lots")
 
 
-def test_cli_end_to_end(tmp_path, monkeypatch):
+def test_cli_end_to_end_json(tmp_path, monkeypatch, capsys):
     src = tmp_path / "src.gguf"
     make_gguf(src, {"w": np.ones((4, 64), np.float16)})
     out = tmp_path / "out.gguf"
@@ -28,8 +28,37 @@ def test_cli_end_to_end(tmp_path, monkeypatch):
     budget = str(rss_bytes() + (512 << 20))
     monkeypatch.setattr(sys, "argv",
                         ["featherquant", "--model", str(src), "--output", str(out),
-                         "--format", "q8_0", "--max-ram", budget, "--report", str(rp)])
+                         "--format", "q8_0", "--max-ram", budget,
+                         "--report", str(rp), "--ui", "none", "--json"])
     cli.main()
     assert out.exists()
-    stats = json.loads(rp.read_text())
+    stats = json.loads(capsys.readouterr().out)   # stdout is pure JSON
     assert stats["peak_rss"] <= int(budget)
+    assert json.loads(rp.read_text())["chunks"] == stats["chunks"]
+
+
+def test_cli_plain_ui_goes_to_stderr(tmp_path, monkeypatch, capsys):
+    src = tmp_path / "src.gguf"
+    make_gguf(src, {"w": np.ones((4, 64), np.float16)})
+    out = tmp_path / "out.gguf"
+    budget = str(rss_bytes() + (512 << 20))
+    monkeypatch.setattr(sys, "argv",
+                        ["featherquant", "--model", str(src), "--output", str(out),
+                         "--max-ram", budget, "--ui", "plain"])
+    cli.main()
+    captured = capsys.readouterr()
+    assert "[1/1] w" in captured.err          # progress lines on stderr
+    assert captured.out == ""                 # stdout clean without --json
+
+
+def test_cli_auto_falls_back_to_plain_when_piped(tmp_path, monkeypatch, capsys):
+    src = tmp_path / "src.gguf"
+    make_gguf(src, {"w": np.ones((4, 64), np.float16)})
+    out = tmp_path / "out.gguf"
+    budget = str(rss_bytes() + (512 << 20))
+    monkeypatch.setattr(sys.stderr, "isatty", lambda: False, raising=False)
+    monkeypatch.setattr(sys, "argv",
+                        ["featherquant", "--model", str(src), "--output", str(out),
+                         "--max-ram", budget])
+    cli.main()
+    assert "\x1b[" not in capsys.readouterr().err   # plain mode, no escapes
