@@ -134,7 +134,8 @@ def quantize_model(src: str, dst: str, max_ram: int, report: str | None = None,
     is checkpointed atomically after every committed tensor for crash
     recovery. Returns a stats dict; optionally writes it as JSON to
     ``report``. ``_force_chunk_rows`` is a test hook that overrides the
-    planner.
+    planner. ``progress`` receives typed events (see featherquant.events)
+    for UI rendering; None disables emission.
     """
     t0 = time.monotonic()
     if fmt not in FORMATS:

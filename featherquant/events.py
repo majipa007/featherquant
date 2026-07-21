@@ -5,7 +5,7 @@ callback and never imports a rendering library. Consumers (PlainReporter,
 Dashboard) live in featherquant.ui.
 """
 from dataclasses import dataclass
-from typing import Any, Callable, Union
+from typing import Any, Callable
 
 
 @dataclass(frozen=True)
@@ -51,5 +51,5 @@ class JobDone:
     stats: dict[str, Any]
 
 
-Event = Union[JobStart, TensorStart, ChunkDone, TensorDone, JobDone]
+Event = JobStart | TensorStart | ChunkDone | TensorDone | JobDone
 ProgressFn = Callable[[Event], None]
