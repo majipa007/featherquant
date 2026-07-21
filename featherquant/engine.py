@@ -16,6 +16,7 @@ from gguf import GGML_QUANT_SIZES, GGMLQuantizationType
 from gguf.gguf_reader import ReaderTensor
 
 from .controller import BlockController
+from .events import ChunkDone, JobDone, JobStart, ProgressFn, TensorDone, TensorStart
 from .formats import FORMATS
 from .ggml_backend import GgmlLib, load_ggml
 from .gguf_io import ALIGN, ITEMSIZE, IncrementalWriter, ResumeWriter, TensorSource
@@ -125,7 +126,8 @@ def quantize_model(src: str, dst: str, max_ram: int, report: str | None = None,
                    manifest_path: str | None = None, resume: bool = False,
                    adaptive: bool = True, vocab_gguf: str | None = None,
                    _force_chunk_rows: int | None = None,
-                   _fail_after: int | None = None) -> dict[str, Any]:
+                   _fail_after: int | None = None,
+                   progress: ProgressFn | None = None) -> dict[str, Any]:
     """Quantize ``src`` GGUF to format ``fmt`` at ``dst``, peak RSS <= ``max_ram``.
 
     A sidecar manifest (``manifest_path``, default ``dst + ".manifest.json"``)
@@ -237,8 +239,19 @@ def quantize_model(src: str, dst: str, max_ram: int, report: str | None = None,
                            header_end=header_end, header_sha256="",
                            tensors=entries, status="in_progress")
 
+        if progress is not None:
+            progress(JobStart(
+                total_tensors=len(plan),
+                total_in_bytes=sum(int(t.n_bytes) for t, _, _ in plan),
+                total_out_bytes=sum(e.nbytes for e in entries),
+                done_out_bytes=sum(e.nbytes for e in entries[:start_i]),
+                max_ram=max_ram, fmt=fmt, dst=dst, resumed_at=start_i))
+
         for i in range(start_i, len(plan)):
             t, tt, _ = plan[i]
+            if progress is not None:
+                progress(TensorStart(i, t.name, t.tensor_type.name, tt.name,
+                                     entries[i].nbytes))
             if _fail_after is not None and (i - start_i) >= _fail_after:
                 raise RuntimeError("_fail_after test hook: simulated crash")
             iw.begin_tensor()
@@ -254,14 +267,16 @@ def quantize_model(src: str, dst: str, max_ram: int, report: str | None = None,
                     f"planned {entries[i].offset}")
             if tt != t.tensor_type:
                 _stream_quantize(source, iw, t, tt, working, stats,
-                                 _force_chunk_rows, lib, adaptive)
+                                 _force_chunk_rows, lib, adaptive, progress)
             else:
-                _stream_copy(source, iw, t, stats)
+                _stream_copy(source, iw, t, stats, progress)
             # Commit: flush data, hash the written region, checkpoint.
             iw.flush()
             entries[i].sha256 = sha256_file_region(
                 dst, entries[i].offset, entries[i].nbytes)
             man.save(manifest_path)
+            if progress is not None:
+                progress(TensorDone(i))
             # Telemetry: sample RSS after each tensor; count budget breaches.
             r = rss_bytes()
             stats["peak_rss"] = max(stats["peak_rss"], r)
@@ -281,6 +296,8 @@ def quantize_model(src: str, dst: str, max_ram: int, report: str | None = None,
                 json.dump(stats, f, indent=2)
         except OSError as exc:
             raise RuntimeError(f"failed to write report {report}: {exc}") from exc
+    if progress is not None:
+        progress(JobDone(stats))
     return stats
 
 
@@ -288,7 +305,8 @@ def _stream_quantize(source: "TensorSource | SafetensorsSource",
                      iw: "IncrementalWriter | ResumeWriter",
                      t: AnyTensor, tt: GGMLQuantizationType, working: int,
                      stats: dict[str, Any], force_rows: int | None,
-                     lib: GgmlLib | None, adaptive: bool = True) -> None:
+                     lib: GgmlLib | None, adaptive: bool = True,
+                     progress: ProgressFn | None = None) -> None:
     """Quantize one tensor to type ``tt`` in row chunks sized by the budget.
 
     With ``adaptive`` on, a BlockController refines the chunk size from
@@ -336,6 +354,8 @@ def _stream_quantize(source: "TensorSource | SafetensorsSource",
         stats["bytes_read"] += n * ne0 * isz
         stats["bytes_written"] += len(packed)
         stats["chunks"] += 1
+        if progress is not None:
+            progress(ChunkDone(n * ne0 * isz, len(packed), rss_bytes()))
         if ctrl is not None:
             after = rss_bytes()
             ctrl.observe(n, before, after)
@@ -355,7 +375,7 @@ def _stream_quantize(source: "TensorSource | SafetensorsSource",
 
 def _stream_copy(source: "TensorSource | SafetensorsSource",
                  iw: "IncrementalWriter | ResumeWriter", t: AnyTensor,
-                 stats: dict[str, Any]) -> None:
+                 stats: dict[str, Any], progress: ProgressFn | None = None) -> None:
     """Copy an unquantized tensor verbatim in bounded chunks."""
     remaining = int(t.n_bytes)
     pos = 0
@@ -368,3 +388,5 @@ def _stream_copy(source: "TensorSource | SafetensorsSource",
         stats["bytes_read"] += n
         stats["bytes_written"] += n
         stats["chunks"] += 1
+        if progress is not None:
+            progress(ChunkDone(n, n, rss_bytes()))
