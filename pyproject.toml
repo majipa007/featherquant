@@ -3,7 +3,7 @@ name = "featherquant"
 version = "0.0.1"
 description = "Memory-bounded out-of-core GGUF quantization"
 requires-python = ">=3.10"
-dependencies = ["numpy>=1.26", "gguf>=0.16,<0.18"]
+dependencies = ["numpy>=1.26", "gguf>=0.16,<0.18", "rich>=13"]
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "mypy>=1.10", "ruff>=0.4"]

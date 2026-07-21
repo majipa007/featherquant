@@ -44,3 +44,43 @@ def test_plain_reporter_resume_note():
     ev = _events()[0]
     r(JobStart(**{**ev.__dict__, "resumed_at": 5, "done_out_bytes": MIB}))
     assert "resuming at #5" in buf.getvalue()
+
+
+def test_dashboard_renders_progress_and_memory():
+    from rich.console import Console
+
+    from featherquant.ui import Dashboard
+    console = Console(file=io.StringIO(), force_terminal=True, width=120)
+    d = Dashboard(console=console)
+    for ev in _events():
+        d(ev)
+    d.close()
+    out = console.file.getvalue()
+    assert "blk.0.attn_norm.weight" in out   # current-tensor line
+    assert "RSS" in out and "600" in out     # memory gauge with last sample
+    assert "q8_0" in out                     # bar description
+
+
+def test_dashboard_close_idempotent():
+    from rich.console import Console
+
+    from featherquant.ui import Dashboard
+    console = Console(file=io.StringIO(), force_terminal=True, width=80)
+    d = Dashboard(console=console)
+    d(_events()[0])
+    d.close()
+    d.close()  # second close must not raise
+
+
+def test_summary_table_contents():
+    from rich.console import Console
+
+    from featherquant.ui import summary_table
+    console = Console(file=io.StringIO(), width=100)
+    console.print(summary_table({
+        "max_ram": 1024 * MIB, "peak_rss": 600 * MIB,
+        "rss_metadata_peak": 561 * MIB, "budget_violations": 0,
+        "chunks": 455, "bytes_read": 4 * MIB, "bytes_written": 2 * MIB,
+        "elapsed_s": 331.0, "working_budget": 400 * MIB}))
+    out = console.file.getvalue()
+    assert "600 MiB" in out and "1,024 MiB" in out and "331.0" in out
