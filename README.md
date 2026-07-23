@@ -45,14 +45,21 @@ Key properties:
 - **Adaptive** — chunk sizes refine from live RSS feedback (EWMA
   controller); the static cost model is only the prior.
 
-## Install
+## Quick start
+
+```bash
+git clone git@github.com:majipa007/featherquant.git && cd featherquant
+./featherquant.sh          # first run bootstraps uv + venv + deps, then asks
+                           # for your model, format, output, and RAM budget
+```
+
+Or pass CLI flags straight through: `./featherquant.sh --model m.gguf
+--output o.gguf --max-ram 1GB`. Manual setup still works:
 
 ```bash
 uv venv .venv
 uv pip install -p .venv/bin/python -e '.[dev]'
 ```
-
-Requires Python ≥ 3.10, Linux. Runtime deps: `numpy`, `gguf`.
 
 ## Usage
 

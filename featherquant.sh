@@ -84,10 +84,81 @@ run_cmd() {
     exec "${CMD[@]}"
 }
 
+# ---------- interactive wizard ----------
+wizard() {
+    printf '%s\n' "${C_BOLD}FeatherQuant${C_OFF} ${C_DIM}— quantize models larger than your RAM${C_OFF}" >&2
+    printf '\n' >&2
+
+    # 1. Model (file or HF safetensors directory)
+    local model
+    while :; do
+        ask "Model (GGUF file or HF safetensors directory)"
+        model=$REPLY
+        [ -e "$model" ] && break
+        printf '%s\n' "  ${C_ERR}not found:${C_OFF} $model" >&2
+    done
+
+    # 2. Vocab GGUF, only for directory input
+    local vocab_args=()
+    if [ -d "$model" ]; then
+        say "directory input needs a metadata-only vocab GGUF"
+        say "(create one with: scripts/make_vocab_gguf.sh \"$model\" vocab.gguf)"
+        local vocab
+        while :; do
+            ask "Vocab GGUF path"
+            vocab=$REPLY
+            [ -f "$vocab" ] && break
+            printf '%s\n' "  ${C_ERR}not found:${C_OFF} $vocab" >&2
+        done
+        vocab_args=(--vocab-gguf "$vocab")
+    fi
+
+    # 3. Format
+    printf '%s\n' "${C_BOLD}Format${C_OFF}" >&2
+    printf '%s\n' "  1) q8_0    ${C_DIM}8-bit, ~2x smaller, safest${C_OFF}" >&2
+    printf '%s\n' "  2) q4_k_m  ${C_DIM}4-bit, ~4x smaller, needs llama.cpp libggml${C_OFF}" >&2
+    ask "Choose" "1"
+    local format
+    case $REPLY in
+        2) format="q4_k_m" ;;
+        *) format="q8_0" ;;
+    esac
+
+    # 4. Output (default derived from the model name)
+    local base stem out
+    base=$(basename "$model")
+    stem=${base%.gguf}
+    ask "Output path" "./${stem}-${format}.gguf"
+    out=$REPLY
+
+    # 5. RAM budget
+    ask "Max RAM budget (peak memory the run may use)" "2GB"
+    local ram=$REPLY
+
+    # 6. Resume, only when an interrupted run left a manifest
+    local resume_args=()
+    if [ -f "${out}.manifest.json" ]; then
+        ask "Found an interrupted run for this output — resume it? (y/n)" "y"
+        case $REPLY in
+            [nN]*) : ;;
+            *) resume_args=(--resume) ;;
+        esac
+    fi
+
+    CMD=("$VENV/bin/featherquant" --model "$model" --output "$out"
+         --format "$format" --max-ram "$ram")
+    [ ${#vocab_args[@]} -gt 0 ] && CMD+=("${vocab_args[@]}")
+    [ ${#resume_args[@]} -gt 0 ] && CMD+=("${resume_args[@]}")
+
+    printf '\n' >&2
+    say "running: ${CMD[*]}"
+    run_cmd
+}
+
 # ---------- main ----------
 bootstrap
 if [ "$#" -gt 0 ]; then
     CMD=("$VENV/bin/featherquant" "$@")
     run_cmd
 fi
-die "wizard not implemented yet"   # replaced in Task 2
+wizard
