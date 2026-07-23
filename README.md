@@ -1,6 +1,6 @@
-# FeatherQuant
-
-**Quantize models larger than your RAM.**
+<p align="center">
+  <img src="readme.png" alt="FeatherQuant — Quantize models larger than your RAM" width="100%">
+</p>
 
 FeatherQuant is a memory-bounded, out-of-core LLM quantizer. It converts an
 F16/BF16 GGUF model — or a sharded-safetensors Hugging Face checkpoint
@@ -150,7 +150,7 @@ architectures, leaner metadata parsing to lower the budget floor.
 ## Development
 
 ```bash
-.venv/bin/pytest          # 59 tests
+.venv/bin/pytest          # 69 tests
 .venv/bin/ruff check featherquant tests scripts
 .venv/bin/mypy featherquant scripts/compare_reference.py
 ```
