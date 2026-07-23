@@ -125,3 +125,52 @@ def test_relative_paths_resolve_against_callers_cwd(tmp_path):
     r = run_sh(stdin=stdin, cwd=tmp_path)
     assert r.returncode == 0, r.stderr
     assert "rel.gguf" in r.stdout
+
+
+def _stub_generator(tmp_path: Path, exit_code: int = 0) -> str:
+    """Fake make_vocab_gguf.sh: touches the output file (or fails)."""
+    stub = tmp_path / "stub-gen.sh"
+    if exit_code == 0:
+        stub.write_text('#!/bin/bash\ntouch "$2"\n')
+    else:
+        stub.write_text(f'#!/bin/bash\nexit {exit_code}\n')
+    stub.chmod(0o755)
+    return str(stub)
+
+
+def test_wizard_generates_missing_vocab_on_enter(tmp_path):
+    d = tmp_path / "hfmodel"
+    d.mkdir()
+    # inputs: model dir, vocab=default(empty), generate=default(y),
+    #         format=1, output default, ram default
+    stdin = f"{d}\n\n\n1\n\n\n"
+    r = run_sh(stdin=stdin, cwd=str(tmp_path),
+               extra_env={"FQ_VOCAB_GEN": _stub_generator(tmp_path)})
+    assert r.returncode == 0, r.stderr
+    assert "--vocab-gguf" in r.stdout and "hfmodel-vocab.gguf" in r.stdout
+    assert (tmp_path / "hfmodel-vocab.gguf").exists()  # stub actually ran
+
+
+def test_wizard_vocab_directory_input_gets_clear_message(tmp_path):
+    d = tmp_path / "hfmodel"
+    d.mkdir()
+    vocab = _touch(tmp_path / "v.gguf")
+    # first vocab answer is a directory, second is a real file
+    stdin = f"{d}\n{tmp_path}\n{vocab}\n1\n\n\n"
+    r = run_sh(stdin=stdin, cwd=str(tmp_path))
+    assert r.returncode == 0, r.stderr
+    assert "is a directory, need a .gguf file" in r.stderr
+    assert "v.gguf" in r.stdout
+
+
+def test_wizard_generation_failure_reasks(tmp_path):
+    d = tmp_path / "hfmodel"
+    d.mkdir()
+    vocab = _touch(tmp_path / "fallback.gguf")
+    # generation fails once, user then supplies an existing file
+    stdin = f"{d}\n\n\n{vocab}\n1\n\n\n"
+    r = run_sh(stdin=stdin, cwd=str(tmp_path),
+               extra_env={"FQ_VOCAB_GEN": _stub_generator(tmp_path, exit_code=1)})
+    assert r.returncode == 0, r.stderr
+    assert "failed" in r.stderr
+    assert "fallback.gguf" in r.stdout

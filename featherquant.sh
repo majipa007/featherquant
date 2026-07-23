@@ -98,17 +98,31 @@ wizard() {
         printf '%s\n' "  ${C_ERR}not found:${C_OFF} $model" >&2
     done
 
-    # 2. Vocab GGUF, only for directory input
+    # 2. Vocab GGUF, only for directory input. Most users won't have one:
+    #    pressing Enter generates it on the spot (FQ_VOCAB_GEN is a test seam
+    #    that swaps out the real generator script).
     local vocab_args=()
     if [ -d "$model" ]; then
-        say "directory input needs a metadata-only vocab GGUF"
-        say "(create one with: scripts/make_vocab_gguf.sh \"$model\" vocab.gguf)"
-        local vocab
+        say "directory input needs a small metadata-only vocab GGUF (tokenizer + config)"
+        local vocab default_vocab
+        default_vocab="./$(basename "$model")-vocab.gguf"
         while :; do
-            ask "Vocab GGUF path"
+            ask "Vocab GGUF (Enter = generate it for you)" "$default_vocab"
             vocab=${REPLY/#\~\//$HOME/}
             [ -f "$vocab" ] && break
-            printf '%s\n' "  ${C_ERR}not found:${C_OFF} $vocab" >&2
+            if [ -d "$vocab" ]; then
+                printf '%s\n' "  ${C_ERR}is a directory, need a .gguf file:${C_OFF} $vocab" >&2
+                continue
+            fi
+            ask "$(basename "$vocab") does not exist — generate it from the model now? (y/n)" "y"
+            case $REPLY in
+                [nN]*) continue ;;
+            esac
+            say "generating vocab GGUF (uses llama.cpp's convert script; a few seconds)"
+            if "${FQ_VOCAB_GEN:-$SCRIPT_DIR/scripts/make_vocab_gguf.sh}" "$model" "$vocab" >&2; then
+                break
+            fi
+            printf '%s\n' "  ${C_ERR}generation failed${C_OFF} — needs a llama.cpp checkout (set LLAMA_CPP_DIR) and its convert venv (set CONVERT_PY); or provide an existing vocab GGUF" >&2
         done
         vocab_args=(--vocab-gguf "$vocab")
     fi
