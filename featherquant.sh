@@ -15,8 +15,7 @@
 set -euo pipefail
 
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-cd "$SCRIPT_DIR"
-VENV=".venv"
+VENV="$SCRIPT_DIR/.venv"
 PY="$VENV/bin/python"
 STAMP="$VENV/.fq-deps-stamp"
 
@@ -51,7 +50,7 @@ ensure_uv() {
     fi
     say "uv not found — installing to ~/.local/bin"
     command -v curl >/dev/null 2>&1 || die "need curl to install uv (or install uv manually: https://docs.astral.sh/uv/)"
-    curl -LsSf https://astral.sh/uv/install.sh | sh >/dev/null 2>&1 \
+    curl -LsSf https://astral.sh/uv/install.sh | sh >/dev/null \
         || die "uv install failed (network?); install manually and re-run"
     export PATH="$HOME/.local/bin:$PATH"
     command -v uv >/dev/null 2>&1 || die "uv installed but not on PATH; open a new shell or add ~/.local/bin to PATH"
@@ -62,13 +61,13 @@ bootstrap() {
     if [ ! -x "$PY" ]; then
         ensure_uv
         say "creating virtualenv in $VENV"
-        uv venv "$VENV" >/dev/null 2>&1 || die "could not create venv"
+        uv venv "$VENV" >/dev/null || die "could not create venv"
     fi
     # Re-sync only when pyproject changed since the last successful install.
-    if [ ! -f "$STAMP" ] || [ "pyproject.toml" -nt "$STAMP" ]; then
+    if [ ! -f "$STAMP" ] || [ "$SCRIPT_DIR/pyproject.toml" -nt "$STAMP" ]; then
         ensure_uv
         say "syncing dependencies (first run takes a minute)"
-        uv pip install -p "$PY" -e . -q || die "dependency install failed"
+        uv pip install -p "$PY" -e "$SCRIPT_DIR" -q || die "dependency install failed"
         touch "$STAMP"
     fi
 }
@@ -81,6 +80,7 @@ run_cmd() {
         printf '\n'
         exit 0
     fi
+    [ -x "$VENV/bin/featherquant" ] || die "venv looks broken — delete $VENV and re-run"
     exec "${CMD[@]}"
 }
 
@@ -93,7 +93,7 @@ wizard() {
     local model
     while :; do
         ask "Model (GGUF file or HF safetensors directory)"
-        model=$REPLY
+        model=${REPLY/#\~\//$HOME/}
         [ -e "$model" ] && break
         printf '%s\n' "  ${C_ERR}not found:${C_OFF} $model" >&2
     done
@@ -106,7 +106,7 @@ wizard() {
         local vocab
         while :; do
             ask "Vocab GGUF path"
-            vocab=$REPLY
+            vocab=${REPLY/#\~\//$HOME/}
             [ -f "$vocab" ] && break
             printf '%s\n' "  ${C_ERR}not found:${C_OFF} $vocab" >&2
         done
@@ -129,7 +129,7 @@ wizard() {
     base=$(basename "$model")
     stem=${base%.gguf}
     ask "Output path" "./${stem}-${format}.gguf"
-    out=$REPLY
+    out=${REPLY/#\~\//$HOME/}
 
     # 5. RAM budget
     ask "Max RAM budget (peak memory the run may use)" "2GB"

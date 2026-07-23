@@ -53,6 +53,8 @@ git clone git@github.com:majipa007/featherquant.git && cd featherquant
                            # for your model, format, output, and RAM budget
 ```
 
+Requires Python ≥ 3.10 and Linux (or WSL2). Runtime deps: numpy, gguf, rich.
+
 Or pass CLI flags straight through: `./featherquant.sh --model m.gguf
 --output o.gguf --max-ram 1GB`. Manual setup still works:
 

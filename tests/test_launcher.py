@@ -7,12 +7,12 @@ ROOT = Path(__file__).resolve().parents[1]
 SH = str(ROOT / "featherquant.sh")
 
 
-def run_sh(args=(), stdin="", extra_env=None, timeout=60):
+def run_sh(args=(), stdin="", extra_env=None, timeout=60, cwd=ROOT):
     """Run the launcher with the dry-run seam on; return CompletedProcess."""
     env = {**os.environ, "FQ_DRY_RUN": "1", "FQ_SKIP_BOOTSTRAP": "1",
            **(extra_env or {})}
     return subprocess.run(["bash", SH, *args], input=stdin, text=True,
-                          capture_output=True, env=env, cwd=ROOT,
+                          capture_output=True, env=env, cwd=cwd,
                           timeout=timeout)
 
 
@@ -36,8 +36,11 @@ def test_no_escape_codes_when_piped():
 
 
 def test_bootstrap_fast_path_skips_reinstall():
-    # Real repo already has a synced venv + stamp: a run WITHOUT the skip
-    # seam must not install anything (idempotence) and still succeed.
+    # Make the stamp fresh ourselves so this test doesn't depend on the
+    # ambient repo state (fresh clone => real network install otherwise).
+    stamp = ROOT / ".venv" / ".fq-deps-stamp"
+    stamp.parent.mkdir(parents=True, exist_ok=True)
+    stamp.touch()
     r = run_sh(["--model", "m.gguf", "--output", "o.gguf", "--max-ram", "1GB"],
                extra_env={"FQ_SKIP_BOOTSTRAP": ""})
     assert r.returncode == 0, r.stderr
@@ -104,3 +107,21 @@ def test_wizard_can_decline_resume(tmp_path):
     r = run_sh(stdin=stdin)
     assert r.returncode == 0, r.stderr
     assert "--resume" not in r.stdout
+
+
+def test_wizard_expands_tilde_model_path(tmp_path):
+    _touch(tmp_path / "m.gguf")
+    # inputs: model as ~/m.gguf, format=1, output=default, ram=default
+    stdin = "~/m.gguf\n1\n\n\n"
+    r = run_sh(stdin=stdin, extra_env={"HOME": str(tmp_path)})
+    assert r.returncode == 0, r.stderr
+    assert str(tmp_path / "m.gguf") in r.stdout
+
+
+def test_relative_paths_resolve_against_callers_cwd(tmp_path):
+    _touch(tmp_path / "rel.gguf")
+    # inputs: bare relative model name, format=1, output=default, ram=default
+    stdin = "rel.gguf\n1\n\n\n"
+    r = run_sh(stdin=stdin, cwd=tmp_path)
+    assert r.returncode == 0, r.stderr
+    assert "rel.gguf" in r.stdout
