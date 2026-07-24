@@ -101,12 +101,32 @@ wizard() {
     printf '%s\n' "${C_BOLD}FeatherQuant${C_OFF} ${C_DIM}— quantize models larger than your RAM${C_OFF}" >&2
     printf '\n' >&2
 
-    # 1. Model (file or HF safetensors directory)
+    # 1. Model (file, or a directory that actually IS an HF checkpoint —
+    #    i.e. it contains *.safetensors shards; a folder that merely holds
+    #    .gguf files is a browsing mistake, so list them instead).
     local model
     while :; do
         ask "Model (GGUF file or HF safetensors directory)"
         model=${REPLY/#\~\//$HOME/}
-        [ -e "$model" ] && break
+        if [ -f "$model" ]; then
+            break
+        fi
+        if [ -d "$model" ]; then
+            if [ -e "$model/model.safetensors.index.json" ] \
+                || compgen -G "$model/*.safetensors" >/dev/null; then
+                break
+            fi
+            local ggufs
+            ggufs=$(cd "$model" 2>/dev/null && ls -1 -- *.gguf 2>/dev/null | head -8) || true
+            if [ -n "$ggufs" ]; then
+                printf '%s\n' "  ${C_ERR}not an HF checkpoint${C_OFF} (no *.safetensors inside) — but it contains GGUF models:" >&2
+                printf '%s\n' "$ggufs" | sed 's/^/    /' >&2
+                printf '%s\n' "  ${C_DIM}pick one (full path; Tab completes)${C_OFF}" >&2
+            else
+                printf '%s\n' "  ${C_ERR}not a model:${C_OFF} $model has no *.safetensors shards and no .gguf files" >&2
+            fi
+            continue
+        fi
         printf '%s\n' "  ${C_ERR}not found:${C_OFF} $model" >&2
     done
 
@@ -121,7 +141,20 @@ wizard() {
         while :; do
             ask "Vocab GGUF (Enter = generate it for you)" "$default_vocab"
             vocab=${REPLY/#\~\//$HOME/}
-            [ -f "$vocab" ] && break
+            if [ -f "$vocab" ]; then
+                # A vocab GGUF is a few MB of metadata; something huge is
+                # almost certainly a full model picked by mistake.
+                local vsize
+                vsize=$(stat -c %s "$vocab" 2>/dev/null || echo 0)
+                if [ "$vsize" -gt $((100 << 20)) ]; then
+                    ask "$(basename "$vocab") is $((vsize >> 20)) MiB — looks like a full model, not a vocab GGUF. Use it anyway? (y/n)" "n"
+                    case $REPLY in
+                        [yY]*) break ;;
+                        *) continue ;;
+                    esac
+                fi
+                break
+            fi
             if [ -d "$vocab" ]; then
                 printf '%s\n' "  ${C_ERR}is a directory, need a .gguf file:${C_OFF} $vocab" >&2
                 continue

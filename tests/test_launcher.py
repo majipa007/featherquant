@@ -78,6 +78,7 @@ def test_wizard_reasks_on_missing_model(tmp_path):
 def test_wizard_directory_model_requires_vocab(tmp_path):
     d = tmp_path / "hfmodel"
     d.mkdir()
+    _touch(d / "model.safetensors.index.json", b"{}")
     vocab = _touch(tmp_path / "vocab.gguf")
     # inputs: model dir, vocab, format=2 (q4_k_m), output default, ram 1GB
     stdin = f"{d}\n{vocab}\n2\n\n1GB\n"
@@ -141,6 +142,7 @@ def _stub_generator(tmp_path: Path, exit_code: int = 0) -> str:
 def test_wizard_generates_missing_vocab_on_enter(tmp_path):
     d = tmp_path / "hfmodel"
     d.mkdir()
+    _touch(d / "model.safetensors.index.json", b"{}")
     # inputs: model dir, vocab=default(empty), generate=default(y),
     #         format=1, output default, ram default
     stdin = f"{d}\n\n\n1\n\n\n"
@@ -154,6 +156,7 @@ def test_wizard_generates_missing_vocab_on_enter(tmp_path):
 def test_wizard_vocab_directory_input_gets_clear_message(tmp_path):
     d = tmp_path / "hfmodel"
     d.mkdir()
+    _touch(d / "model.safetensors.index.json", b"{}")
     vocab = _touch(tmp_path / "v.gguf")
     # first vocab answer is a directory, second is a real file
     stdin = f"{d}\n{tmp_path}\n{vocab}\n1\n\n\n"
@@ -166,6 +169,7 @@ def test_wizard_vocab_directory_input_gets_clear_message(tmp_path):
 def test_wizard_generation_failure_reasks(tmp_path):
     d = tmp_path / "hfmodel"
     d.mkdir()
+    _touch(d / "model.safetensors.index.json", b"{}")
     vocab = _touch(tmp_path / "fallback.gguf")
     # generation fails once, user then supplies an existing file
     stdin = f"{d}\n\n\n{vocab}\n1\n\n\n"
@@ -261,3 +265,45 @@ def test_wizard_output_directory_gets_default_filename(tmp_path):
     r = run_sh(stdin=stdin)
     assert r.returncode == 0, r.stderr
     assert f"{outdir}/tiny-q8_0.gguf" in r.stdout   # file inside the dir
+
+
+def test_wizard_rejects_gguf_folder_as_model_and_lists_contents(tmp_path):
+    d = tmp_path / "modelsdir"
+    d.mkdir()
+    _touch(d / "a.gguf")
+    _touch(d / "b.gguf")
+    real = _touch(tmp_path / "real.gguf")
+    stdin = f"{d}\n{real}\n1\n\n\n"
+    r = run_sh(stdin=stdin)
+    assert r.returncode == 0, r.stderr
+    assert "contains GGUF models" in r.stderr
+    assert "a.gguf" in r.stderr            # shows what to pick
+    assert "real.gguf" in r.stdout
+    assert "--vocab-gguf" not in r.stdout  # never treated as HF checkpoint
+
+
+def test_wizard_rejects_directory_with_no_models(tmp_path):
+    d = tmp_path / "emptydir"
+    d.mkdir()
+    real = _touch(tmp_path / "real.gguf")
+    stdin = f"{d}\n{real}\n1\n\n\n"
+    r = run_sh(stdin=stdin)
+    assert r.returncode == 0, r.stderr
+    assert "not a model" in r.stderr
+    assert "real.gguf" in r.stdout
+
+
+def test_wizard_warns_when_vocab_looks_like_full_model(tmp_path):
+    d = tmp_path / "hfmodel"
+    d.mkdir()
+    _touch(d / "model.safetensors.index.json", b"{}")
+    big = tmp_path / "big.gguf"
+    big.touch()
+    os.truncate(big, 200 << 20)            # sparse 200 MiB "vocab"
+    small = _touch(tmp_path / "small.gguf")
+    # decline the big file (default n), then give a sane one
+    stdin = f"{d}\n{big}\n\n{small}\n1\n\n\n"
+    r = run_sh(stdin=stdin)
+    assert r.returncode == 0, r.stderr
+    assert "looks like a full model" in r.stderr
+    assert "small.gguf" in r.stdout
