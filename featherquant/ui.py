@@ -21,7 +21,7 @@ from rich.progress import (
 from rich.table import Table
 from rich.text import Text
 
-from .events import ChunkDone, Event, JobDone, JobStart, TensorStart
+from .events import ChunkDone, Event, JobDone, JobStart, Phase, TensorStart
 
 
 def _mib(n: int | float) -> str:
@@ -37,7 +37,9 @@ class PlainReporter:
         self.total = 0
 
     def __call__(self, ev: Event) -> None:
-        if isinstance(ev, JobStart):
+        if isinstance(ev, Phase):
+            print(f"> {ev.label}", file=self.out, flush=True)
+        elif isinstance(ev, JobStart):
             self.total = ev.total_tensors
             note = f" | resuming at #{ev.resumed_at}" if ev.resumed_at else ""
             print(f"featherquant: {ev.fmt} -> {ev.dst} | "
@@ -92,7 +94,9 @@ class Dashboard:
         return Group(self.status, self.mem, self.progress)
 
     def __call__(self, ev: Event) -> None:
-        if isinstance(ev, JobStart):
+        if isinstance(ev, Phase):
+            self.status = Text(ev.label, style="dim")
+        elif isinstance(ev, JobStart):
             self.max_ram = ev.max_ram
             self.total = ev.total_tensors
             self.task_id = self.progress.add_task(

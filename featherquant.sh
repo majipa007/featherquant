@@ -156,10 +156,27 @@ wizard() {
     stem=${base%.gguf}
     ask "Output path" "./${stem}-${format}.gguf"
     out=${REPLY/#\~\//$HOME/}
+    if [ -d "$out" ]; then
+        # A directory means "put it in there" — derive the filename.
+        out="${out%/}/${stem}-${format}.gguf"
+        say "output is a directory — writing to $out"
+    fi
 
-    # 5. RAM budget
-    ask "Max RAM budget (peak memory the run may use)" "2GB"
-    local ram=$REPLY
+    # 5. RAM budget. Bare numbers mean GB (nobody budgets bytes);
+    #    anything unparseable re-asks instead of exploding later.
+    local ram
+    while :; do
+        ask "Max RAM budget (peak memory the run may use)" "2GB"
+        ram=$REPLY
+        if printf '%s' "$ram" | grep -qE '^[0-9]+([.][0-9]+)?$'; then
+            ram="${ram}GB"
+            say "interpreting as $ram"
+            break
+        elif printf '%s' "$ram" | grep -qiE '^[0-9]+([.][0-9]+)? *[KMGT]i?B?$'; then
+            break
+        fi
+        printf '%s\n' "  ${C_ERR}not a size:${C_OFF} $ram (try 2GB or 512MB)" >&2
+    done
 
     # 6. Resume, only when an interrupted run left a manifest
     local resume_args=()

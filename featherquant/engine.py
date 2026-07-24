@@ -16,7 +16,7 @@ from gguf import GGML_QUANT_SIZES, GGMLQuantizationType
 from gguf.gguf_reader import ReaderTensor
 
 from .controller import BlockController
-from .events import ChunkDone, JobDone, JobStart, ProgressFn, TensorDone, TensorStart
+from .events import ChunkDone, JobDone, JobStart, Phase, ProgressFn, TensorDone, TensorStart
 from .formats import FORMATS
 from .ggml_backend import GgmlLib, load_ggml
 from .gguf_io import ALIGN, ITEMSIZE, IncrementalWriter, ResumeWriter, TensorSource
@@ -164,6 +164,10 @@ def quantize_model(src: str, dst: str, max_ram: int, report: str | None = None,
     bc_field = source.reader.fields.get(f"{arch}.block_count")
     n_layers = int(bc_field.contents()) if bc_field is not None else 0
 
+    if progress is not None:
+        progress(Phase(f"read metadata: {len(source.tensors)} tensors "
+                       f"({arch}, {n_layers} layers)"))
+
     # Plan first: every output size/offset is known before any data moves.
     plan: list[tuple[AnyTensor, GGMLQuantizationType, int]] = []
     for t in source.tensors:
@@ -183,12 +187,19 @@ def quantize_model(src: str, dst: str, max_ram: int, report: str | None = None,
                              "bytes_written": 0, "peak_rss": rss_bytes(),
                              "budget_violations": 0, "chunks": 0}
 
+    if progress is not None:
+        out_mib = sum(nb for _, _, nb in plan) >> 20
+        progress(Phase(f"planned {len(plan)} tensors -> ~{out_mib} MiB "
+                       f"output ({fmt})"))
+
     if manifest_path is None:
         manifest_path = dst + ".manifest.json"
     resuming = resume and os.path.exists(manifest_path)
 
     iw: IncrementalWriter | ResumeWriter
     if resuming:
+        if progress is not None:
+            progress(Phase("verifying committed tensors from the manifest"))
         man, start_i = _prepare_resume(src, dst, manifest_path, plan, fmt)
         entries = man.tensors
         if start_i < len(entries):
@@ -199,6 +210,8 @@ def quantize_model(src: str, dst: str, max_ram: int, report: str | None = None,
         iw = ResumeWriter(dst, pos)
     else:
         start_i = 0
+        if progress is not None:
+            progress(Phase("copying model metadata to the output header"))
         iw = IncrementalWriter(dst, source.reader, spec.file_type)
 
     # From here on the writer holds an open file: every exit path must close
@@ -215,10 +228,15 @@ def quantize_model(src: str, dst: str, max_ram: int, report: str | None = None,
         gc.collect()
         working = max_ram - rss_bytes() - RESERVE
         if working <= 0:
-            sys.exit(f"budget {max_ram} B too small: runtime still at "
-                     f"{rss_bytes()} B RSS after metadata release "
-                     f"+ {RESERVE} B reserve")
+            sys.exit(f"budget too small: {max_ram >> 20} MiB requested, but the "
+                     f"runtime already sits at {rss_bytes() >> 20} MiB RSS after "
+                     f"metadata release, plus a {RESERVE >> 20} MiB safety "
+                     f"reserve. Try --max-ram 1GB or higher.")
         stats.update(working_budget=working, rss_metadata_peak=rss_metadata_peak)
+        if progress is not None:
+            progress(Phase(f"working budget {working >> 20} MiB "
+                           f"(RSS {rss_bytes() >> 20} MiB after metadata "
+                           f"release, reserve {RESERVE >> 20} MiB)"))
 
         if not resuming:
             assert isinstance(iw, IncrementalWriter)

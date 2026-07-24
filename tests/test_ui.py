@@ -84,3 +84,24 @@ def test_summary_table_contents():
         "elapsed_s": 331.0, "working_budget": 400 * MIB}))
     out = console.file.getvalue()
     assert "600 MiB" in out and "1,024 MiB" in out and "331.0" in out
+
+
+def test_plain_reporter_prints_phase_lines():
+    from featherquant.events import Phase
+    from featherquant.ui import PlainReporter
+    buf = io.StringIO()
+    r = PlainReporter(out=buf)
+    r(Phase("read metadata: 311 tensors"))
+    assert "read metadata: 311 tensors" in buf.getvalue()
+
+
+def test_dashboard_shows_phase_in_status():
+    from rich.console import Console
+
+    from featherquant.events import Phase
+    from featherquant.ui import Dashboard
+    console = Console(file=io.StringIO(), force_terminal=True, width=120)
+    d = Dashboard(console=console)
+    d(Phase("planning 311 tensors"))
+    d.close()
+    assert "planning 311 tensors" in console.file.getvalue()

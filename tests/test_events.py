@@ -24,8 +24,7 @@ def test_event_sequence(tmp_path):
     events = []
     stats = quantize_model(str(sp), str(tmp_path / "o.gguf"), _budget(),
                            progress=events.append)
-    assert isinstance(events[0], JobStart)
-    js = events[0]
+    js = next(e for e in events if isinstance(e, JobStart))
     assert js.total_tensors == 2 and js.resumed_at == 0 and js.done_out_bytes == 0
     assert js.fmt == "q8_0" and js.max_ram == stats["max_ram"]
     starts = [e for e in events if isinstance(e, TensorStart)]
@@ -61,8 +60,24 @@ def test_resume_reports_offset(tmp_path):
     events = []
     quantize_model(str(sp), str(out), _budget(), resume=True,
                    progress=events.append)
-    js = events[0]
+    js = next(e for e in events if isinstance(e, JobStart))
     assert js.resumed_at == 1
     assert js.done_out_bytes > 0  # first tensor's bytes already banked
     starts = [e for e in events if isinstance(e, TensorStart)]
     assert [s.index for s in starts] == [1]
+
+
+def test_phase_events_narrate_setup_steps(tmp_path):
+    from featherquant.events import Phase
+    sp = _make_model(tmp_path)
+    events = []
+    quantize_model(str(sp), str(tmp_path / "o.gguf"), _budget(),
+                   progress=events.append)
+    labels = [e.label for e in events if isinstance(e, Phase)]
+    # the silent setup gap is narrated: metadata read, plan, budget sizing
+    assert any("tensors" in lbl for lbl in labels), labels
+    assert any("working budget" in lbl for lbl in labels), labels
+    # all phases fire before streaming starts (JobStart)
+    first_job = next(i for i, e in enumerate(events) if isinstance(e, JobStart))
+    last_phase = max(i for i, e in enumerate(events) if isinstance(e, Phase))
+    assert last_phase < first_job

@@ -233,3 +233,31 @@ def test_wizard_tab_completes_paths_on_tty(tmp_path):
     text = buf.decode(errors="replace")
     assert "not found" not in text, text   # completion failed -> re-ask loop
     assert "unique-model.gguf" in text, text
+
+
+def test_wizard_bare_number_ram_means_gigabytes(tmp_path):
+    model = _touch(tmp_path / "tiny.gguf")
+    # "2" on the RAM prompt means 2GB, never 2 bytes
+    stdin = f"{model}\n1\n\n2\n"
+    r = run_sh(stdin=stdin)
+    assert r.returncode == 0, r.stderr
+    assert "--max-ram 2GB" in r.stdout
+    assert "2GB" in r.stderr        # wizard says what it interpreted
+
+
+def test_wizard_reasks_on_garbage_ram(tmp_path):
+    model = _touch(tmp_path / "tiny.gguf")
+    stdin = f"{model}\n1\n\nlots\n3GB\n"
+    r = run_sh(stdin=stdin)
+    assert r.returncode == 0, r.stderr
+    assert "--max-ram 3GB" in r.stdout
+
+
+def test_wizard_output_directory_gets_default_filename(tmp_path):
+    model = _touch(tmp_path / "tiny.gguf")
+    outdir = tmp_path / "outdir"
+    outdir.mkdir()
+    stdin = f"{model}\n1\n{outdir}\n\n"
+    r = run_sh(stdin=stdin)
+    assert r.returncode == 0, r.stderr
+    assert f"{outdir}/tiny-q8_0.gguf" in r.stdout   # file inside the dir

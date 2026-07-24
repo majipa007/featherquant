@@ -14,10 +14,17 @@ def test_parse_size():
     assert cli.parse_size("2GB") == 2 << 30
     assert cli.parse_size("1.5GiB") == int(1.5 * (1 << 30))
     assert cli.parse_size("512M") == 512 << 20
-    assert cli.parse_size("64KB") == 64 << 10
-    assert cli.parse_size("1024") == 1024
+    assert cli.parse_size("64MB") == 64 << 20
     with pytest.raises(Exception):
         cli.parse_size("lots")
+
+
+def test_parse_size_rejects_sub_mebibyte_budgets():
+    # "--max-ram 2" meaning 2 BYTES is always a user mistake; the minimum
+    # feasible budget is hundreds of MiB. Reject with a hint.
+    for bad in ("2", "512", "1024", "900KB"):
+        with pytest.raises(Exception, match="[Gg]B"):
+            cli.parse_size(bad)
 
 
 def test_cli_end_to_end_json(tmp_path, monkeypatch, capsys):

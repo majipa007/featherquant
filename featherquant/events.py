@@ -9,6 +9,13 @@ from typing import Any, Callable
 
 
 @dataclass(frozen=True)
+class Phase:
+    """A setup/teardown step worth narrating (metadata read, planning,
+    budget sizing, resume verification). Fired before streaming begins."""
+    label: str
+
+
+@dataclass(frozen=True)
 class JobStart:
     """Fired once, after planning, before the first tensor streams."""
     total_tensors: int
@@ -51,5 +58,5 @@ class JobDone:
     stats: dict[str, Any]
 
 
-Event = JobStart | TensorStart | ChunkDone | TensorDone | JobDone
+Event = Phase | JobStart | TensorStart | ChunkDone | TensorDone | JobDone
 ProgressFn = Callable[[Event], None]

@@ -11,13 +11,19 @@ from .ui import Dashboard, PlainReporter, summary_table
 
 
 def parse_size(s: str) -> int:
-    """Parse a human-readable size ('2GB', '512M', '1.5GiB', '1024') to bytes."""
+    """Parse a human-readable size ('2GB', '512M', '1.5GiB') to bytes."""
     m = re.fullmatch(r"(\d+(?:\.\d+)?)\s*([KMGT])?I?B?", s.strip(), re.IGNORECASE)
     if not m:
-        raise argparse.ArgumentTypeError(f"bad size: {s!r} (try 2GB, 512M, 1024)")
+        raise argparse.ArgumentTypeError(f"bad size: {s!r} (try 2GB or 512M)")
     # Suffix letter -> power of 1024; no suffix -> plain bytes.
     exp = "KMGT".find(m[2].upper()) + 1 if m[2] else 0
-    return int(float(m[1]) * 1024 ** exp)
+    n = int(float(m[1]) * 1024 ** exp)
+    if n < 1 << 20:
+        # A sub-MiB budget is always a typo ("2" meaning 2 GB): the minimum
+        # feasible working set is hundreds of MiB.
+        raise argparse.ArgumentTypeError(
+            f"{s!r} is {n} bytes — did you mean {m[1].rstrip('.0') or m[1]}GB?")
+    return n
 
 
 def main() -> None:
