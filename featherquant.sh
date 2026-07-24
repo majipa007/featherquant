@@ -32,12 +32,24 @@ die() { printf '%s\n' "${C_ERR}error:${C_OFF} $*" >&2; exit 1; }
 # ask PROMPT DEFAULT -> sets REPLY (empty input takes the default)
 ask() {
     local prompt=$1 def=${2-}
+    local p
     if [ -n "$def" ]; then
-        printf '%s' "${C_BOLD}${prompt}${C_OFF} ${C_DIM}[${def}]${C_OFF}: " >&2
+        p="${C_BOLD}${prompt}${C_OFF} ${C_DIM}[${def}]${C_OFF}: "
     else
-        printf '%s' "${C_BOLD}${prompt}${C_OFF}: " >&2
+        p="${C_BOLD}${prompt}${C_OFF}: "
     fi
-    IFS= read -r REPLY || die "input closed"
+    if [ -t 0 ]; then
+        # Interactive terminal: readline gives Tab path-completion, arrow
+        # keys, and line editing. (read -p writes the prompt to stderr.)
+        IFS= read -r -e -p "$p" REPLY || die "input closed"
+    else
+        # Piped stdin (tests, scripts): plain read, prompt on stderr.
+        printf '%s' "$p" >&2
+        IFS= read -r REPLY || die "input closed"
+    fi
+    # Trim trailing whitespace: readline's Tab-completion appends a space
+    # after completed filenames, which would fail path validation.
+    REPLY=${REPLY%"${REPLY##*[![:space:]]}"}
     REPLY=${REPLY:-$def}
 }
 

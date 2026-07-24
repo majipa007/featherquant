@@ -174,3 +174,62 @@ def test_wizard_generation_failure_reasks(tmp_path):
     assert r.returncode == 0, r.stderr
     assert "failed" in r.stderr
     assert "fallback.gguf" in r.stdout
+
+
+def test_wizard_tab_completes_paths_on_tty(tmp_path):
+    """On a real terminal, Tab must filename-complete in path prompts."""
+    import pty
+    import select
+    import signal
+    import time
+
+    _touch(tmp_path / "unique-model.gguf")
+    pid, fd = pty.fork()
+    if pid == 0:  # child: run the wizard on a pty
+        os.chdir(tmp_path)
+        os.environ["FQ_DRY_RUN"] = "1"
+        os.environ["FQ_SKIP_BOOTSTRAP"] = "1"
+        os.environ["TERM"] = "dumb"
+        os.execvp("bash", ["bash", SH])
+
+    buf = b""
+
+    def read_until(marker: bytes, deadline: float = 8.0) -> bool:
+        nonlocal buf
+        end = time.monotonic() + deadline
+        while marker not in buf and time.monotonic() < end:
+            r, _, _ = select.select([fd], [], [], 0.2)
+            if r:
+                try:
+                    chunk = os.read(fd, 4096)
+                except OSError:
+                    break
+                if not chunk:
+                    break
+                buf += chunk
+        return marker in buf
+
+    try:
+        assert read_until(b"Model ("), buf.decode(errors="replace")
+        os.write(fd, b"uniq\t")      # readline should complete the filename
+        time.sleep(0.5)
+        os.write(fd, b"\n1\n\n\n")   # accept model, format, output, ram
+        read_until(b"--model")
+        time.sleep(0.3)
+        r, _, _ = select.select([fd], [], [], 1.0)
+        if r:
+            try:
+                buf += os.read(fd, 8192)
+            except OSError:
+                pass
+    finally:
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        os.waitpid(pid, 0)
+        os.close(fd)
+
+    text = buf.decode(errors="replace")
+    assert "not found" not in text, text   # completion failed -> re-ask loop
+    assert "unique-model.gguf" in text, text
