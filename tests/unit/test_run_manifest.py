@@ -1,6 +1,7 @@
+import hashlib
 import json
 
-from featherquant.run_manifest import RunManifest, host_info, today_ddmmyyyy
+from featherquant.run_manifest import RunManifest, host_info, sha256_file, today_ddmmyyyy
 
 
 def test_new_manifest_has_spec_shape(tmp_path):
@@ -41,3 +42,32 @@ def test_roundtrip(tmp_path):
 def test_host_info_fields():
     h = host_info()
     assert set(h) == {"cpu", "ram_gb", "kernel"}
+
+
+def test_sha256_file_chunks_correctly(tmp_path):
+    """Hash a file > 8 MiB in multiple chunks and verify correctness."""
+    # Create a file just over 8 MiB with repeating pattern
+    pattern = b"x" * 1024  # 1 KiB pattern
+    p = tmp_path / "large.bin"
+    with open(str(p), "wb") as f:
+        # Write 8.5 MiB to span two read chunks
+        for _ in range(8704):  # 8704 * 1024 = 8912896 bytes ~8.5 MiB
+            f.write(pattern)
+
+    # Compute expected hash from full file
+    with open(str(p), "rb") as f:
+        expected = hashlib.sha256(f.read()).hexdigest()
+
+    # Verify sha256_file matches
+    actual = sha256_file(str(p))
+    assert actual == expected
+
+
+def test_sha256_file_missing_path_raises():
+    """Missing file raises RuntimeError with path in message."""
+    missing = "/nonexistent/file.bin"
+    try:
+        sha256_file(missing)
+        assert False, "Expected RuntimeError"
+    except RuntimeError as exc:
+        assert missing in str(exc)
