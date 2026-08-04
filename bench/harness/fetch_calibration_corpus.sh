@@ -70,8 +70,19 @@ if [ ! -f "$SHA_FILE" ]; then
   # First time this corpus has been seen here: pin it, don't fail. The
   # checksum covers the extracted corpus file itself, never the zip — that
   # is what perplexity runs actually consume.
-  if ! sha256sum "$DEST" > "$SHA_FILE"; then
-    echo "ERROR: cannot compute/pin checksum for \"$DEST\"" >&2
+  #
+  # This is NOT a verified run: there is no prior checksum record to check
+  # the on-disk bytes against, so whatever is sitting at $DEST right now —
+  # correct or already corrupted — is being trusted as the new baseline.
+  # That must be loud and unmistakable to anyone skimming a log, since a
+  # quiet pin here reads identically to a successful verification later.
+  SHA_LINE=$(sha256sum "$DEST") || { echo "ERROR: cannot compute checksum for \"$DEST\"" >&2; exit 1; }
+  DIGEST=${SHA_LINE%% *}
+  echo "WARNING: no pinned checksum found at \"$SHA_FILE\" for corpus \"$DEST\" —" \
+       "trusting the on-disk file as the new baseline (nothing verified it)." \
+       "Pinning sha256 $DIGEST for \"$DEST\"." >&2
+  if ! echo "$SHA_LINE" > "$SHA_FILE"; then
+    echo "ERROR: cannot write pinned checksum to \"$SHA_FILE\"" >&2
     exit 1
   fi
   echo "pinned checksum for \"$DEST\" -> \"$SHA_FILE\""

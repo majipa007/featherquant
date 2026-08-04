@@ -37,6 +37,9 @@ def test_verifies_clean_against_pinned_checksum(tmp_path):
     r = _run(dest)
     assert r.returncode == 0, r.stderr
     assert "verified" in (r.stdout + r.stderr).lower()
+    # A verified run must stay visibly distinct from a first-time pin — no
+    # "trusting the on-disk file" warning belongs here.
+    assert "warning" not in (r.stdout + r.stderr).lower()
 
 
 def test_corrupted_file_fails_loudly(tmp_path):
@@ -58,6 +61,14 @@ def test_missing_sha256_pins_existing_corpus(tmp_path):
     assert r.returncode == 0, r.stderr
     assert sha_file.exists()
     assert str(dest) in sha_file.read_text()
-    # Re-running against the now-pinned checksum must still pass.
+    # A first-time pin trusts whatever bytes are already on disk — it must
+    # never look like a verified run to someone skimming the log.
+    combined = (r.stdout + r.stderr).lower()
+    assert "warning" in combined
+    assert "no pinned checksum" in combined
+    assert str(dest) in (r.stdout + r.stderr)
+    # Re-running against the now-pinned checksum must still pass, and must
+    # be the quiet, verified path this time (no warning).
     r2 = _run(dest)
     assert r2.returncode == 0, r2.stderr
+    assert "warning" not in (r2.stdout + r2.stderr).lower()
