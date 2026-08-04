@@ -27,6 +27,8 @@ STORAGE=${6:-nvme}; BUDGET=${7:-0}
 DIR=${FQ_MANIFEST_DIR:-bench/manifests}
 mkdir -p "$DIR"
 TIMEFILE=$(mktemp)
+# Don't leak the time-report tempfile if this script is interrupted mid-run.
+trap 'rm -f "$TIMEFILE"' EXIT
 
 # Cold page cache makes I/O numbers honest; needs root, so it is optional
 # and recorded either way.
@@ -60,10 +62,14 @@ wall = re.search(r"Elapsed \(wall clock\) time.*?: ([\d:.]+)", text)[1]
 parts = [float(p) for p in wall.split(":")]
 seconds = sum(p * 60 ** i for i, p in enumerate(reversed(parts)))
 
+# Budget may arrive float-formatted (e.g. "536870912.0" from a 0.5*2**30
+# ceiling computed in shell) — tolerate that, then keep it an int everywhere.
+budget_bytes = int(float(budget))
+
 m = RunManifest.new(run_id, {"id": model_id, "revision": "unknown",
                              "sha256": "unknown"},
-                    method, int(budget), storage)
-m.enforcement = "cgroup_v2_memory_max" if int(budget) else "none_unconstrained"
+                    method, budget_bytes, storage)
+m.enforcement = "cgroup_v2_memory_max" if budget_bytes else "none_unconstrained"
 m.peak_observed_bytes = peak_kb * 1024
 m.runtime_seconds = round(seconds, 3)
 # 137 = SIGKILL, which under a cgroup ceiling means the OOM killer fired.
@@ -75,5 +81,12 @@ except RuntimeError:
 m.save(f"{dirname}/{run_id}.json")
 print(f"wrote {dirname}/{run_id}.json (exit={code}, peak={peak_kb//1024} MiB)")
 PY
-rm -f "$TIMEFILE"
+MANIFEST_CODE=$?
+if [ "$MANIFEST_CODE" -ne 0 ]; then
+  # A failure here must not look like a successful run: the wrapped command's
+  # exit code alone (below) would hide a manifest that was never written.
+  echo "ERROR: manifest write failed for $DIR/$RUN_ID.json" \
+       "(manifest-writer exit=$MANIFEST_CODE, wrapped command exit=$CODE)" >&2
+  exit "$MANIFEST_CODE"
+fi
 exit "$CODE"
