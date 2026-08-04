@@ -98,10 +98,16 @@ one — must state its measurement context together:
 - tokenizer: Qwen3
 
 `bench/harness/fetch_calibration_corpus.sh [DEST]` fetches the corpus (default
-`bench/data/wiki.test.raw`) and pins its sha256 alongside it at `DEST.sha256`. The first
-run downloads the file and writes the pin; every later run re-verifies the file against
-that pin and fails loudly on any mismatch, so a silently-changed corpus can never
-invalidate a comparison already made against it:
+`bench/data/wiki.test.raw`) and pins its sha256 alongside it at `DEST.sha256`. The
+upstream `ggml-org/ci` dataset repo no longer serves `wiki.test.raw` at a raw path — it
+only ships `wikitext-2-raw-v1.zip` (the same archive llama.cpp's own
+`scripts/get-wikitext-2.sh` uses) — so the script downloads that zip to a temp path,
+extracts `wikitext-2-raw/wiki.test.raw` from it to `DEST`, and pins/verifies the sha256 of
+the **extracted corpus file**, never the zip, since the extracted file is what
+`llama-perplexity` and `llama-imatrix` actually consume. The first run downloads and
+writes the pin; every later run re-verifies the extracted file against that pin and fails
+loudly on any mismatch, so a silently-changed corpus can never invalidate a comparison
+already made against it:
 
 ```bash
 bash bench/harness/fetch_calibration_corpus.sh
@@ -110,14 +116,13 @@ bash bench/harness/fetch_calibration_corpus.sh
 Only `bench/data/wiki.test.raw.sha256` is committed; `bench/data/wiki.test.raw` itself is
 gitignored (large binary).
 
-`bench/data/wiki.test.raw.sha256` pinned: `NOT YET RUN` — the URL in this script
-(`https://huggingface.co/datasets/ggml-org/ci/resolve/main/wikitext-2-raw/wiki.test.raw`)
-returned HTTP 404 when tried on 04/08/2026: the upstream `ggml-org/ci` dataset repo now
-only carries `wikitext-2-raw-v1.zip`, not a raw path under `wikitext-2-raw/`. Whoever runs
-this section for real must first resolve a working source for `wiki.test.raw` (e.g.
-llama.cpp's own `scripts/get-wikitext-2.sh`, which downloads and unzips that same archive)
-before the pin can be written — do not substitute a different corpus silently; update this
-note with whatever URL actually worked.
+`bench/data/wiki.test.raw.sha256` pinned: **yes**, on 04/08/2026 —
+
+```
+173c87a53759e0201f33e0ccf978e510c2042d7f2cb78229d9a50d79b9e7dd08  bench/data/wiki.test.raw
+```
+
+extracted file size: 1,290,590 bytes.
 
 ## Step 1 — imatrix pass
 
