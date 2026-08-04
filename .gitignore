@@ -4,3 +4,4 @@ __pycache__/
 *.gguf
 *.report.json
 baseline_*.txt
+bench/data/wiki.test.raw
