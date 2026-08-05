@@ -21,6 +21,10 @@ packages = ["featherquant"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+markers = [
+  "memory: runs under a cgroup v2 ceiling (spec §9)",
+  "slow: minutes-scale; excluded from the default run with -m 'not slow'",
+]
 
 [tool.ruff]
 line-length = 100

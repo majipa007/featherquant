@@ -65,3 +65,26 @@ table (`featherquant/roles.py`) already has Llama-shaped patterns (`gate_proj`, 
 exercised end-to-end against a real Llama checkpoint's `config.json` key names (e.g.
 whether it also sets `model_type`, `num_key_value_heads`, `head_dim`). This remains
 outstanding until such a checkpoint is available.
+
+## M2 gate: cgroup-enforced bit-identity (Task 7)
+
+`tests/memory/test_rtn_under_ceiling.py::test_bit_identical_under_ceiling` runs the
+featherquant RTN path against a real model wrapped in
+`bench/harness/run_under_ceiling.sh` (`systemd-run --user`, cgroup v2 `MemoryMax`,
+`MemorySwapMax=0`), then diffs the output against `llama-quantize`'s reference tensor-for-
+tensor with `featherquant.validator.compare_gguf`. A test that passes without a ceiling is
+not a memory test (spec §9); this one enforces the ceiling as a kernel-level constraint,
+not just an accounting one — exit 137 (OOM-killed) fails the test.
+
+```
+$ .venv/bin/pytest tests/memory -v -m memory
+tests/memory/test_rtn_under_ceiling.py::test_bit_identical_under_ceiling[q8_0-Q8_0] PASSED
+tests/memory/test_rtn_under_ceiling.py::test_bit_identical_under_ceiling[q4_k_m-Q4_K_M] PASSED
+2 passed in 143.96s (0:02:23)
+```
+
+Model: `~/models/qwen3-0.6b-bf16.gguf` (1.5 GB on disk). Ceiling: 1 GiB (`1G`), the value
+in the brief — both formats passed on the first attempt, no OOM-kill, so no smaller
+ceiling was searched for and 1G was not raised. `structural_check` and `compare_gguf` both
+returned `[]` for both formats: featherquant's RTN output is bit-identical to
+`llama-quantize`'s, under a real memory ceiling, for both Q8_0 and Q4_K_M.
