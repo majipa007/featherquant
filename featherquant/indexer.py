@@ -15,6 +15,15 @@ from .st_source import ST_ITEMSIZE, parse_shard_header
 # Roles that are never quantized regardless of shape.
 _NEVER_QUANT = {Role.NORM}
 
+# ggml's smallest quantization block is 32 elements (Q8_0); K-quants use
+# 256-element superblocks. A row whose length isn't even a multiple of the
+# smaller block can never be quantized to any ggml format, so it's excluded
+# here. The planner (Task 9) tightens this further per target quant type
+# (e.g. requiring %256==0 for a K-quant) — this is only the coarse "could
+# this ever be block-quantized at all" gate (spec §10 forbids row groups
+# not aligned to their superblock size).
+BLOCK_ALIGN = 32
+
 
 @dataclass(frozen=True)
 class TensorInfo:
@@ -123,12 +132,14 @@ def index_safetensors(model_dir: str) -> ModelIndex:
         for name, st in entries.items():
             role, layer = classify_hf(name)
             nbytes = st.end - st.start
-            # 2-D+ float tensors are the only quantizable ones (norms stay
-            # in their native precision regardless of shape); whether a
-            # specific block format's row-alignment feasibility holds is a
-            # planner call (task 9), not decided here.
+            # 2-D+ float tensors with a block-quantizable row are the only
+            # quantizable ones; norms stay in native precision regardless
+            # of shape. Which *specific* block format (Q8_0 vs a K-quant)
+            # a row is eligible for is a planner call (task 9); this is
+            # only the coarse floor every format needs.
             eligible = (len(st.shape) >= 2 and role not in _NEVER_QUANT
-                        and st.dtype in ST_ITEMSIZE)
+                        and st.dtype in ST_ITEMSIZE
+                        and st.shape[-1] % BLOCK_ALIGN == 0)
             tensors.append(TensorInfo(
                 name=name, shape=tuple(st.shape), dtype=st.dtype,
                 shard_path=path, byte_offset=data_base + st.start,
@@ -175,6 +186,10 @@ def index_gguf(path: str) -> ModelIndex:
     except (KeyError, TypeError, ValueError) as exc:
         raise RuntimeError(f"{path} is missing a required metadata key: {exc}") from exc
     tensors: list[TensorInfo] = []
+    # Unlike the safetensors path (which reads vocab_size straight out of
+    # config.json), GGUF has no single reliable vocab-size KV across
+    # architectures, so it's read off the embedding tensor's own shape
+    # instead. Stays 0 if no tensor classifies as Role.EMBED.
     vocab = 0
     for t in reader.tensors:
         role, layer = classify_gguf(t.name)
@@ -185,9 +200,12 @@ def index_gguf(path: str) -> ModelIndex:
             name=t.name, shape=shape, dtype=t.tensor_type.name,
             shard_path=path, byte_offset=int(t.data_offset),
             byte_length=int(t.n_bytes),
-            quant_eligible=(len(shape) >= 2 and role not in _NEVER_QUANT),
+            quant_eligible=(len(shape) >= 2 and role not in _NEVER_QUANT
+                            and shape[-1] % BLOCK_ALIGN == 0),
             layer_index=layer, role=role.value))
     reader.fields.clear()   # drop the KV object graph immediately
+    if not tensors:
+        raise RuntimeError(f"no tensors found in {path}")
     return ModelIndex(
         model_arch=arch, n_layers=n_layers, hidden_size=hidden,
         intermediate_size=inter, vocab_size=vocab,

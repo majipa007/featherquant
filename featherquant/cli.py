@@ -115,10 +115,9 @@ def _cmd_index(argv: list[str]) -> None:
 def _dispatch(name: str, argv: list[str]) -> None:
     """Route a subcommand; later tasks register plan/run/verify/bench here."""
     handlers = {"index": _cmd_index}
-    try:
-        handlers[name](argv)
-    except KeyError:
+    if name not in handlers:
         sys.exit(f"featherquant: {name} is not implemented yet")
+    handlers[name](argv)
 
 
 if __name__ == "__main__":
