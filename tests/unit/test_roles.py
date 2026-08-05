@@ -17,6 +17,8 @@ from featherquant.roles import Role, classify_gguf, classify_hf
     ("model.layers.3.input_layernorm.weight", Role.NORM, 3),
     ("model.layers.3.self_attn.q_norm.weight", Role.NORM, 3),
     ("transformer.h.5.attn.c_attn.weight", Role.ATTN_Q, 5),
+    ("transformer.h.5.attn.c_proj.weight", Role.ATTN_O, 5),
+    ("transformer.h.5.mlp.c_proj.weight", Role.FFN_DOWN, 5),
 ])
 def test_classify_hf(name, role, layer):
     assert classify_hf(name) == (role, layer)
@@ -29,6 +31,8 @@ def test_classify_hf(name, role, layer):
     ("blk.12.attn_q.weight", Role.ATTN_Q, 12),
     ("blk.12.ffn_down.weight", Role.FFN_DOWN, 12),
     ("blk.12.attn_norm.weight", Role.NORM, 12),
+    ("blk.12.attn_q_norm.weight", Role.NORM, 12),
+    ("blk.12.attn_k_norm.weight", Role.NORM, 12),
 ])
 def test_classify_gguf(name, role, layer):
     assert classify_gguf(name) == (role, layer)

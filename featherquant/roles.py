@@ -26,6 +26,7 @@ class Role(str, Enum):
 
 # (regex, role). Order matters: norms are matched before the projections
 # they sit next to (q_norm must not fall through to attn_q).
+# c_proj is ambiguous: attn.c_proj is an output projection, mlp.c_proj is down.
 _HF_RULES: list[tuple[re.Pattern[str], Role]] = [
     (re.compile(r"(^|\.)(embed_tokens|wte|word_embeddings)\."), Role.EMBED),
     (re.compile(r"(^|\.)(lm_head|output_layer)\."), Role.OUTPUT),
@@ -33,9 +34,11 @@ _HF_RULES: list[tuple[re.Pattern[str], Role]] = [
     (re.compile(r"\.(q_proj|c_attn)\."), Role.ATTN_Q),
     (re.compile(r"\.k_proj\."), Role.ATTN_K),
     (re.compile(r"\.v_proj\."), Role.ATTN_V),
-    (re.compile(r"\.(o_proj|c_proj|dense)\."), Role.ATTN_O),
+    (re.compile(r"\.attn\.(o_proj|c_proj)\."), Role.ATTN_O),
+    (re.compile(r"\.(o_proj|dense)\."), Role.ATTN_O),
     (re.compile(r"\.(gate_proj|w1)\."), Role.FFN_GATE),
     (re.compile(r"\.(up_proj|w3|c_fc)\."), Role.FFN_UP),
+    (re.compile(r"\.mlp\.c_proj\."), Role.FFN_DOWN),
     (re.compile(r"\.(down_proj|w2)\."), Role.FFN_DOWN),
 ]
 
