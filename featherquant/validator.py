@@ -7,9 +7,52 @@ CI can run on any machine.
 import os
 
 import numpy as np
-from gguf import GGML_QUANT_SIZES, GGUFReader
+from gguf import GGML_QUANT_SIZES, GGMLQuantizationType, GGUFReader, ReaderField, ReaderTensor
 
 from .gguf_io import ALIGN
+
+
+class _MetadataOnlyReader(GGUFReader):
+    """GGUFReader that never materializes a tensor's raw data.
+
+    ``GGUFReader.__init__`` memmaps and reshapes every tensor's actual
+    bytes as its last construction step, so a file truncated only in its
+    tensor-data section (header, KV block and tensor-info table all
+    intact) raises ``ValueError`` from numpy's reshape *during
+    construction* — before ``structural_check`` ever gets to run its own
+    offset/size arithmetic. That defeats the truncation check for the
+    exact case it exists to catch. ``structural_check`` never reads
+    ``ReaderTensor.data``, so this subclass overrides only the final
+    data-materializing step of construction, reusing everything else
+    (header, KV, tensor-info parsing) verbatim, so tensor metadata
+    (name, type, shape, offset) is available even for a truncated file.
+    A malformed header, unsupported version, or bad alignment field
+    still raises from the base class before this override is reached —
+    that is genuine corruption, not truncation.
+    """
+
+    def _build_tensors(self, start_offs: int, fields: list[ReaderField]) -> None:
+        tensors = []
+        for field in fields:
+            _name_len, name_data, _n_dims, dims, raw_dtype, offset_tensor = field.parts
+            tensor_name = str(bytes(name_data), encoding="utf-8")
+            ggml_type = GGMLQuantizationType(raw_dtype[0])
+            n_elems = int(np.prod(dims))
+            data_offs = int(start_offs + offset_tensor[0])
+            try:
+                block_size, type_size = GGML_QUANT_SIZES[ggml_type]
+                n_bytes = n_elems * type_size // block_size
+            except KeyError:
+                # Unsupported quant type: leave a sentinel so
+                # structural_check's own loop reports this per-tensor
+                # instead of construction crashing on it.
+                n_bytes = -1
+            tensors.append(ReaderTensor(
+                name=tensor_name, tensor_type=ggml_type, shape=dims,
+                n_elements=n_elems, n_bytes=n_bytes, data_offset=data_offs,
+                data=np.empty(0, dtype=np.uint8), field=field,
+            ))
+        self.tensors = tensors
 
 
 def _chunks_equal(a: np.ndarray, b: np.ndarray) -> bool:
@@ -23,7 +66,14 @@ def _chunks_equal(a: np.ndarray, b: np.ndarray) -> bool:
 
 
 def compare_gguf(a: str, b: str) -> list[str]:
-    """Tensor-for-tensor comparison; empty list means identical."""
+    """Tensor-for-tensor comparison; empty list means identical.
+
+    Unlike ``structural_check``, a construction failure here raises
+    rather than becoming a message: this function needs real tensor
+    bytes to compare (``ReaderTensor.data``), so a file that can't be
+    opened for its data can't be compared at all — there is no partial
+    "here's what's wrong" result to return, only "this can't run."
+    """
     try:
         ra, rb = GGUFReader(a), GGUFReader(b)
     except Exception as exc:
@@ -57,20 +107,25 @@ def structural_check(path: str) -> list[str]:
     except OSError as exc:
         raise RuntimeError(f"cannot access {path}: {exc}") from exc
     try:
-        reader = GGUFReader(path)
-    except ValueError as exc:
-        # GGUFReader memmaps and reshapes every tensor's data eagerly at
-        # construction time, so a truncated (or otherwise corrupt)
-        # tensor-data section raises here rather than surfacing as an
-        # offset/size mismatch in the per-tensor checks below.
-        return [f"file truncated or corrupt: {exc}"]
+        reader = _MetadataOnlyReader(path)
     except Exception as exc:
-        raise RuntimeError(f"cannot open {path}: {exc}") from exc
+        # _MetadataOnlyReader tolerates a truncated tensor-data section
+        # (see its docstring); anything that still raises here failed
+        # earlier in GGUFReader.__init__ — bad magic, unsupported
+        # version, or a bad alignment field — none of which is a
+        # truncation, so the message says so rather than reusing that
+        # word.
+        return [f"file is not a readable GGUF (bad header, version, "
+                f"or alignment): {exc}"]
     msgs: list[str] = []
     if not reader.tensors:
         msgs.append("no tensors in file")
     for t in reader.tensors:
-        blk, tsz = GGML_QUANT_SIZES[t.tensor_type]
+        try:
+            blk, tsz = GGML_QUANT_SIZES[t.tensor_type]
+        except KeyError:
+            msgs.append(f"{t.name}: unsupported tensor type {t.tensor_type!r}")
+            continue
         n_elements = int(np.prod([int(d) for d in t.shape]))
         if n_elements % blk:
             msgs.append(f"{t.name}: {n_elements} elements is not a multiple "

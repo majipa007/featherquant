@@ -19,7 +19,7 @@ ALLOWED = {"gguf_io.py", "st_source.py"}   # GGUFReader users that say "mmap"
 
 def test_no_direct_mmap_calls():
     offenders = []
-    for path in pathlib.Path("featherquant").glob("*.py"):
+    for path in pathlib.Path("featherquant").rglob("*.py"):
         text = path.read_text()
         if re.search(r"\bmmap\b|np\.memmap|numpy\.memmap", text):
             offenders.append(path.name)

@@ -35,3 +35,18 @@ def test_structural_check_catches_truncation(tmp_path):
         f.truncate(p.stat().st_size - 16)
     msgs = structural_check(str(p))
     assert any("truncated" in m for m in msgs)
+    # Must come from structural_check's own per-tensor end > size arithmetic
+    # (names the tensor and states both byte counts), not a generic
+    # construction-failure fallback message.
+    assert any(m.startswith("t.weight:") and "needs" in m and "file is" in m
+               for m in msgs)
+
+
+def test_structural_check_reports_unreadable_file_distinctly(tmp_path):
+    """A genuinely corrupt file (bad magic) is not a truncation and must
+    say so — the two failure modes must not merge into one message."""
+    p = tmp_path / "bad.gguf"
+    p.write_bytes(b"NOPE" + b"\x00" * 60)
+    msgs = structural_check(str(p))
+    assert len(msgs) == 1 and "not a readable GGUF" in msgs[0]
+    assert not any("truncated" in m for m in msgs)
