@@ -29,3 +29,14 @@ def test_measured_option_line_has_numbers(tmp_path):
     assert c.ppl_delta == pytest.approx(0.31)
     assert c.measured is True
     assert "measured PPL cost +0.31" in format_option(c, "--hessian-approx=diagonal")
+
+
+def test_malformed_row_raises(tmp_path):
+    doc = tmp_path / "costs.md"
+    doc.write_text(
+        "| rung | flag | peak Δ | runtime Δ | PPL Δ | downstream task Δ | source |\n"
+        "|---|---|---|---|---|---|---|\n"
+        "| hessian_diagonal | `--hessian-approx=diagonal` | -598 MB | +4% | "
+        "+0.31 | m6_diag.json |\n")
+    with pytest.raises(RuntimeError, match="malformed rows"):
+        load_costs(str(doc))

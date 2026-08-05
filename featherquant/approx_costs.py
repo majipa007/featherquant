@@ -49,17 +49,24 @@ def _number(cell: str) -> float | None:
 def load_costs(path: str = "docs/approximation_costs.md") -> dict[str, ApproxCost]:
     """Parse the markdown table into a rung -> ApproxCost lookup."""
     try:
-        lines = open(path).read().splitlines()
+        with open(path) as f:
+            lines = f.read().splitlines()
     except OSError as exc:
         raise RuntimeError(f"cannot read cost table {path}: {exc}") from exc
     costs: dict[str, ApproxCost] = {}
-    for line in lines:
+    malformed: list[tuple[int, str]] = []
+    row_count = 0
+    for i, line in enumerate(lines, 1):
         if not line.startswith("|"):
             continue
         cells = [c.strip() for c in line.strip("|").split("|")]
-        if len(cells) != 7 or cells[0] in ("rung", "---"):
+        if cells[0] in ("rung", "---"):
             continue
         if set(cells[0]) <= {"-", ":"}:
+            continue
+        row_count += 1
+        if len(cells) != 7:
+            malformed.append((i, line))
             continue
         rung, flag, peak, runtime, ppl, task, source = cells
         cost = ApproxCost(rung=rung, flag=flag.strip("`"),
@@ -68,15 +75,21 @@ def load_costs(path: str = "docs/approximation_costs.md") -> dict[str, ApproxCos
                           ppl_delta=_number(ppl), task_delta=task,
                           measured=source != "UNMEASURED")
         costs[rung] = cost
+    if malformed:
+        lines_str = "\n".join(f"  Line {line_no}: {line}" for line_no, line in malformed)
+        raise RuntimeError(f"malformed rows in {path}: {len(costs)} parsed, {row_count} "
+                          f"total. Offending lines:\n{lines_str}")
     if not costs:
         raise RuntimeError(f"no cost rows parsed from {path}")
     return costs
 
 
-def format_option(cost: ApproxCost, flag: str) -> str:
+def format_option(cost: ApproxCost, flag: str | None = None) -> str:
     """One line of the planner's INFEASIBLE options block."""
+    if flag is None:
+        flag = cost.flag
     peak = ("UNMEASURED" if cost.peak_delta_bytes is None
-            else f"{cost.peak_delta_bytes / 10 ** 6:+.0f} MB")
+            else f"{cost.peak_delta_bytes / _UNITS['MB']:+.0f} MB")
     ppl = ("PPL cost UNMEASURED" if not cost.measured or cost.ppl_delta is None
            else f"measured PPL cost {cost.ppl_delta:+.2f}")
     return f"{flag:<28} ({peak}, {ppl})"

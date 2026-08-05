@@ -6,7 +6,9 @@ manifest in `bench/manifests/` produces it; the `source` column names that
 manifest. The planner reads this file to populate its refusal message.
 
 Measurement context for every PPL figure in this table: wikitext-2-raw
-`wiki.test.raw`, context length 512, Qwen3 tokenizer.
+`wiki.test.raw`, context length 512, Qwen3 tokenizer. Peak Δ figures are
+decimal MB (10^6 bytes, as file-size tools report); memory ceilings elsewhere
+in this project are binary GiB.
 
 | rung | flag | peak Δ | runtime Δ | PPL Δ | downstream task Δ | source |
 |---|---|---|---|---|---|---|
