@@ -212,14 +212,26 @@ the GPU, writes a spec §6 run manifest, and separately writes a per-linear reco
 error file that Task 17's calibrator comparison consumes:
 
 - `bench/manifests/<RUN_ID>.json` — the run manifest (`quality.ppl` filled by Step 3 below).
+  `output_sha256` is a **whole-directory digest**, not a single-file hash: `GPTQModel.save()`
+  writes a directory (sharded safetensors + config files), so there is no single output file
+  to hash the way Baselines 1-3's single `.gguf` files get one. The digest walks every file
+  under the output directory, sorts by path relative to that directory (so it never depends
+  on filesystem iteration order), and folds `"<relative_path>\n<sha256_of_file>\n"` for each
+  into one running sha256 (reusing `featherquant.run_manifest.sha256_file` for the per-file
+  hash) — see `_hash_directory`'s docstring in the script for the exact reproduction recipe.
 - `bench/manifests/<RUN_ID>_layer_errors.json` — `"<layer_index>.<role>" -> MSE` for the
-  seven linear roles (`attn_q, attn_k, attn_v, attn_o, ffn_gate, ffn_up, ffn_down`), computed
-  by snapshotting each `nn.Linear` weight before `model.quantize()` overwrites it in place and
-  comparing against the same module after quantization. If the installed `gptqmodel` version
-  does not expose the model as a walkable `torch.nn.Module` (or the pre/post shapes never
-  line up), this file is written with an explicit `{"unavailable": "<reason>"}` marker instead
-  of a fabricated or partial error map — the human running Step 2 should check this file's
-  content immediately and record here whether it produced real numbers or the marker.
+  seven linear roles (`attn_q, attn_k, attn_v, attn_o, ffn_gate, ffn_up, ffn_down`), driven
+  from a snapshot of each `nn.Linear` weight taken before `model.quantize()` overwrites it in
+  place. Each snapshotted module is looked up by name in the quantized model afterwards and
+  compared; a module that cannot be compared (not found by that name, no accessible weight,
+  or a shape mismatch) is recorded as **that module's own** `"unavailable: <reason>"` string
+  rather than dropped or failing the whole file — a partial artifact naming exactly which
+  modules could not be read is more useful than an all-or-nothing marker. The whole-file
+  `{"unavailable": "<reason>"}` form is written only if module-by-module comparison could not
+  even be attempted (the snapshot itself came back empty, or the quantized model isn't
+  walkable by name at all). Either way, the human running Step 2 should check this file's
+  content immediately and record here whether it produced real numbers, a partial map with
+  some modules unavailable, or the whole-file marker.
 
 It is **not** part of the shipped `featherquant` package — it lives in `bench/harness/` only,
 is never imported by `featherquant/`, and its dependencies are never added to
@@ -240,7 +252,14 @@ Expected: `bench/manifests/m0_gptq_reference.json` and
 
 Calibration texts are read from `bench/data/wiki.test.raw` — the same corpus pinned in
 Baseline 3 above (sha256 `173c87a53759e0201f33e0ccf978e510c2042d7f2cb78229d9a50d79b9e7dd08`,
-1,290,590 bytes) — 128 samples of length > 512, matching spec §3.3's calibration shape.
+1,290,590 bytes). wikitext-2-raw's `wiki.test.raw` has essentially no blank-line/paragraph
+structure (a naive `"\n\n"` split returns the whole 1.29 MB file as one string), so the
+script chunks the corpus by raw character count instead: 128 contiguous, non-overlapping
+chunks of `512 * 4 = 2048` characters each (spec §3.3's 128-samples-x-512-tokens shape,
+approximated at a documented ~4 characters/token for this corpus, since this script loads
+no tokenizer of its own). The script logs the requested-vs-obtained chunk count to stderr
+and **fails loudly** if the corpus is too short to produce 128 full chunks — it must never
+silently calibrate on less data than declared.
 
 ## Step 3 — fill `quality.ppl`, or record the blocker honestly
 
