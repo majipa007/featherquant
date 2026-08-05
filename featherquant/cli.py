@@ -7,6 +7,7 @@ import sys
 from rich.console import Console
 
 from .engine import quantize_model
+from .indexer import index_model
 from .ui import Dashboard, PlainReporter, summary_table
 
 
@@ -26,8 +27,22 @@ def parse_size(s: str) -> int:
     return n
 
 
+# Spec §8 subcommands. Only "index" is implemented so far (Task 6); plan,
+# run, verify and bench land in Tasks 9-10 — see _dispatch below.
+SUBCOMMANDS = {"index", "plan", "run", "verify", "bench"}
+
+
 def main() -> None:
-    """Entry point for the ``featherquant`` console script."""
+    """Entry point: spec §8 subcommands, or the legacy flat-flag form."""
+    argv = sys.argv[1:]
+    if argv and argv[0] in SUBCOMMANDS:
+        _dispatch(argv[0], argv[1:])
+        return
+    _legacy_quantize(argv)      # the existing --model/--output/--max-ram path
+
+
+def _legacy_quantize(argv: list[str]) -> None:
+    """The original flat-flag quantize command (pre-subcommand CLI)."""
     p = argparse.ArgumentParser(prog="featherquant",
                                 description="Memory-bounded GGUF quantization")
     p.add_argument("--model", required=True,
@@ -53,7 +68,7 @@ def main() -> None:
                         "none (auto = rich on a TTY, plain otherwise)")
     p.add_argument("--json", action="store_true",
                    help="print the stats JSON to stdout")
-    a = p.parse_args()
+    a = p.parse_args(argv)
     mode = a.ui if a.ui != "auto" else (
         "rich" if sys.stderr.isatty() else "plain")
     reporter: Dashboard | PlainReporter | None
@@ -78,6 +93,32 @@ def main() -> None:
         print(json.dumps(stats, indent=2))       # stdout: machine-readable
     elif mode != "none":
         Console(stderr=True).print(summary_table(stats))
+
+
+def _cmd_index(argv: list[str]) -> None:
+    """``featherquant index <model_path> -o manifest.json``"""
+    p = argparse.ArgumentParser(prog="featherquant index",
+                                description="Emit a model index (metadata only)")
+    p.add_argument("model_path", help="HF checkpoint directory or GGUF file")
+    p.add_argument("-o", "--output", required=True, help="index JSON path")
+    a = p.parse_args(argv)
+    try:
+        idx = index_model(a.model_path)
+    except RuntimeError as exc:
+        sys.exit(f"featherquant index: error: {exc}")
+    idx.save(a.output)
+    print(f"{len(idx.tensors)} tensors, {idx.n_layers} layers, "
+          f"largest tensor {idx.largest_tensor_bytes / 2**20:.1f} MiB -> "
+          f"{a.output}")
+
+
+def _dispatch(name: str, argv: list[str]) -> None:
+    """Route a subcommand; later tasks register plan/run/verify/bench here."""
+    handlers = {"index": _cmd_index}
+    try:
+        handlers[name](argv)
+    except KeyError:
+        sys.exit(f"featherquant: {name} is not implemented yet")
 
 
 if __name__ == "__main__":
