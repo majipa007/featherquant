@@ -159,3 +159,32 @@ def test_metadata_overhead_released_for_small_budgets(tmp_path):
     stats = quantize_model(REAL_MODEL, str(tmp_path / "o.gguf"),
                            base + (400 << 20))
     assert stats["budget_violations"] == 0
+
+
+def test_q8_0_works_without_ggml_but_k_quants_refuse(tmp_path, monkeypatch):
+    # No ggml library: q8_0 falls back to the numpy kernel with identical
+    # bytes; q4_k_m has no fallback and must exit with a clear message.
+    import featherquant.engine as eng
+
+    def no_lib(path=None):
+        raise RuntimeError("no lib anywhere")
+
+    monkeypatch.setattr(eng, "load_ggml", no_lib)
+    sp, w, *_ = _make_model(tmp_path)
+    o = tmp_path / "o.gguf"
+    eng.quantize_model(str(sp), str(o), rss_bytes() + (512 << 20))
+    r = GGUFReader(str(o))
+    tq = next(t for t in r.tensors if t.name == "blk.0.attn_q.weight")
+    assert tq.data.tobytes() == quantize_q8_0(w.astype(np.float32).ravel())
+    with pytest.raises(SystemExit, match="ggml"):
+        eng.quantize_model(str(sp), str(tmp_path / "k.gguf"),
+                           rss_bytes() + (512 << 20), fmt="q4_k_m")
+
+
+def test_threads_parameter_does_not_change_bytes(tmp_path):
+    sp, *_ = _make_model(tmp_path)
+    big = rss_bytes() + (512 << 20)
+    o1, o2 = tmp_path / "a.gguf", tmp_path / "b.gguf"
+    quantize_model(str(sp), str(o1), big, threads=1)
+    quantize_model(str(sp), str(o2), big, threads=4)
+    assert o1.read_bytes() == o2.read_bytes()

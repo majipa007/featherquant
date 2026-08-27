@@ -125,6 +125,7 @@ def quantize_model(src: str, dst: str, max_ram: int, report: str | None = None,
                    fmt: str = "q8_0", ggml_lib: str | None = None,
                    manifest_path: str | None = None, resume: bool = False,
                    adaptive: bool = True, vocab_gguf: str | None = None,
+                   threads: int = 1,
                    _force_chunk_rows: int | None = None,
                    _fail_after: int | None = None,
                    progress: ProgressFn | None = None) -> dict[str, Any]:
@@ -133,20 +134,22 @@ def quantize_model(src: str, dst: str, max_ram: int, report: str | None = None,
     A sidecar manifest (``manifest_path``, default ``dst + ".manifest.json"``)
     is checkpointed atomically after every committed tensor for crash
     recovery. Returns a stats dict; optionally writes it as JSON to
-    ``report``. ``_force_chunk_rows`` is a test hook that overrides the
-    planner. ``progress`` receives typed events (see featherquant.events)
-    for UI rendering; None disables emission.
+    ``report``. ``threads`` splits each row chunk across that many worker
+    threads inside the ggml kernels (never changes bytes). ``_force_chunk_rows``
+    is a test hook that overrides the planner. ``progress`` receives typed
+    events (see featherquant.events) for UI rendering; None disables emission.
     """
     t0 = time.monotonic()
     if fmt not in FORMATS:
         sys.exit(f"unknown format {fmt!r}; supported: {sorted(FORMATS)}")
     spec = FORMATS[fmt]
-    lib: GgmlLib | None = None
-    if spec.needs_ggml:
-        try:
-            lib = load_ggml(ggml_lib)
-        except RuntimeError as exc:
+    lib: GgmlLib | None
+    try:
+        lib = load_ggml(ggml_lib)
+    except RuntimeError as exc:
+        if spec.needs_ggml:
             sys.exit(f"format {fmt!r} needs the ggml library: {exc}")
+        lib = None  # q8_0 falls back to the (single-threaded) numpy kernel
     # Source dispatch: a directory is a sharded-safetensors HF checkpoint,
     # a file is a GGUF.
     source: TensorSource | SafetensorsSource
@@ -185,7 +188,9 @@ def quantize_model(src: str, dst: str, max_ram: int, report: str | None = None,
     stats: dict[str, Any] = {"max_ram": max_ram, "reserve": RESERVE,
                              "working_budget": 0, "bytes_read": 0,
                              "bytes_written": 0, "peak_rss": rss_bytes(),
-                             "budget_violations": 0, "chunks": 0}
+                             "budget_violations": 0, "chunks": 0,
+                             "threads": threads,
+                             "kernel": "ggml" if lib is not None else "numpy"}
 
     if progress is not None:
         out_mib = sum(nb for _, _, nb in plan) >> 20
@@ -286,7 +291,8 @@ def quantize_model(src: str, dst: str, max_ram: int, report: str | None = None,
                     f"planned {entries[i].offset}")
             if tt != t.tensor_type:
                 _stream_quantize(source, iw, t, tt, working, stats,
-                                 _force_chunk_rows, lib, adaptive, progress)
+                                 _force_chunk_rows, lib, adaptive, progress,
+                                 threads)
             else:
                 _stream_copy(source, iw, t, stats, progress)
             # Commit: flush data, hash the written region, checkpoint.
@@ -325,7 +331,8 @@ def _stream_quantize(source: "TensorSource | SafetensorsSource",
                      t: AnyTensor, tt: GGMLQuantizationType, working: int,
                      stats: dict[str, Any], force_rows: int | None,
                      lib: GgmlLib | None, adaptive: bool = True,
-                     progress: ProgressFn | None = None) -> None:
+                     progress: ProgressFn | None = None,
+                     threads: int = 1) -> None:
     """Quantize one tensor to type ``tt`` in row chunks sized by the budget.
 
     With ``adaptive`` on, a BlockController refines the chunk size from
@@ -363,12 +370,13 @@ def _stream_quantize(source: "TensorSource | SafetensorsSource",
         if tt == GGMLQuantizationType.F32:
             # Pure type widening (e.g. BF16 norms -> F32): x is already f32.
             packed = x.tobytes()
-        elif tt == GGMLQuantizationType.Q8_0:
-            packed = quantize_q8_0(x)
+        elif tt == GGMLQuantizationType.Q8_0 and lib is None:
+            packed = quantize_q8_0(x)  # numpy reference kernel, no ggml needed
         else:
-            # K-quants: byte-exact kernels from the ggml shared library.
+            # ggml kernels (byte-exact by construction), rows split across
+            # threads; Q8_0 here is byte-identical to the numpy kernel.
             assert lib is not None  # guaranteed by quantize_model for needs_ggml
-            packed = lib.quantize_rows(x, tt, ne0)
+            packed = lib.quantize_rows(x, tt, ne0, threads)
         iw.write(packed)
         stats["bytes_read"] += n * ne0 * isz
         stats["bytes_written"] += len(packed)

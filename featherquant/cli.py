@@ -1,6 +1,7 @@
 """Command-line interface for FeatherQuant."""
 import argparse
 import json
+import os
 import re
 import sys
 
@@ -8,6 +9,17 @@ from rich.console import Console
 
 from .engine import quantize_model
 from .ui import Dashboard, PlainReporter, summary_table
+
+
+def positive_int(s: str) -> int:
+    """argparse type: an integer >= 1."""
+    try:
+        n = int(s)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"not an integer: {s!r}") from exc
+    if n < 1:
+        raise argparse.ArgumentTypeError(f"must be >= 1, got {n}")
+    return n
 
 
 def parse_size(s: str) -> int:
@@ -47,6 +59,9 @@ def main() -> None:
     p.add_argument("--resume", action="store_true",
                    help="continue an interrupted run from its manifest "
                         "(verifies committed tensors first)")
+    p.add_argument("--threads", type=positive_int, default=os.cpu_count() or 1,
+                   help="worker threads inside the ggml kernels; never changes "
+                        "output bytes (default: all CPUs)")
     p.add_argument("--ui", choices=["auto", "rich", "plain", "none"],
                    default="auto",
                    help="progress display: rich dashboard, plain lines, or "
@@ -67,7 +82,7 @@ def main() -> None:
         stats = quantize_model(a.model, a.output, a.max_ram, report=a.report,
                                fmt=a.format, ggml_lib=a.ggml_lib,
                                resume=a.resume, vocab_gguf=a.vocab_gguf,
-                               progress=reporter)
+                               threads=a.threads, progress=reporter)
     except RuntimeError as exc:
         # Turn internal errors into a clean CLI failure, no traceback spam.
         sys.exit(f"featherquant: error: {exc}")

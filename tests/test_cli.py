@@ -69,3 +69,24 @@ def test_cli_auto_falls_back_to_plain_when_piped(tmp_path, monkeypatch, capsys):
                          "--max-ram", budget])
     cli.main()
     assert "\x1b[" not in capsys.readouterr().err   # plain mode, no escapes
+
+
+def test_cli_threads_flag(tmp_path, monkeypatch, capsys):
+    src = tmp_path / "src.gguf"
+    make_gguf(src, {"w": np.ones((8, 64), np.float16)})
+    outs = []
+    for n in ("1", "3"):
+        out = tmp_path / f"out{n}.gguf"
+        monkeypatch.setattr(sys, "argv",
+                            ["featherquant", "--model", str(src), "--output", str(out),
+                             "--max-ram", str(rss_bytes() + (512 << 20)),
+                             "--threads", n, "--ui", "none", "--json"])
+        cli.main()
+        assert json.loads(capsys.readouterr().out)["threads"] == int(n)
+        outs.append(out.read_bytes())
+    assert outs[0] == outs[1]                 # thread count never changes bytes
+    with pytest.raises(SystemExit):           # zero threads is a usage error
+        monkeypatch.setattr(sys, "argv",
+                            ["featherquant", "--model", str(src), "--output",
+                             str(tmp_path / "z.gguf"), "--max-ram", "1GB", "--threads", "0"])
+        cli.main()
